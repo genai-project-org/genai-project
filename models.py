@@ -218,6 +218,7 @@ class StripeCheckoutRequest(BaseModel):
 
 class RazorpayOrderRequest(BaseModel):
     pack_slug: str
+    discount_code: Optional[str] = None
 
 
 class RazorpayVerifyRequest(BaseModel):

@@ -18,14 +18,14 @@ from models import (
 )
 from services.credit_service import add_credits
 from services.notification_service import notify
+from services.payments_service import get_usd_to_inr, round_up_inr
+from services.discount_service import validate as validate_discount, increment_use
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
-# Fixed USD→INR conversion rate — kept slightly padded so we never undercharge.
-USD_TO_INR = float(os.environ.get("USD_TO_INR_RATE", "85"))
 
 _razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if RAZORPAY_KEY_ID else None
 
@@ -56,7 +56,15 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         raise HTTPException(501, "Razorpay not configured")
     pack = await _get_pack(req.pack_slug, "usd")
     price_usd = float(pack["price"])
-    amount_paise = int(round(price_usd * USD_TO_INR * 100))
+    discount = None
+    if req.discount_code:
+        d = await validate_discount(req.discount_code, price_usd, target_kind=f"pack:{req.pack_slug}")
+        if not d.get("ok"):
+            raise HTTPException(400, f"Discount not applied: {d.get('reason', 'invalid code')}")
+        price_usd = d["final_usd"]  # charge the discounted USD
+        discount = {"code": req.discount_code.upper(), "discount_usd": d["discount_usd"]}
+    fx_rate = await get_usd_to_inr()
+    amount_paise = round_up_inr(price_usd * fx_rate) * 100
     credits_val = float(pack["credits"] + pack.get("bonus_credits", 0))
     origin = str(request.headers.get("origin") or request.headers.get("referer") or "").rstrip("/") \
              or os.environ.get("APP_URL", "").rstrip("/")
@@ -71,7 +79,8 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         "currency": "INR",
         "accept_partial": False,
         "reference_id": ref_id,
-        "description": f"IEMA.ai — {pack['name']} ({int(credits_val)} credits, ${price_usd:.2f} USD)",
+        "description": f"IEMA.ai — {pack['name']} ({int(credits_val)} credits, ${price_usd:.2f} USD"
+                       + (f", code {discount['code']}" if discount else "") + ")",
         "customer": {
             "name": user.name or user.email.split("@")[0],
             "email": user.email,
@@ -96,7 +105,8 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         status="initiated",
         metadata={"user_id": user.id, "pack_slug": req.pack_slug,
                   "reference_id": ref_id, "amount_paise": amount_paise,
-                  "fx_rate": USD_TO_INR, "short_url": link.get("short_url")},
+                  "fx_rate": fx_rate, "short_url": link.get("short_url"),
+                  "discount": discount},
     )
     await payment_transactions_col.insert_one(tx.to_mongo())
     return {
@@ -137,6 +147,9 @@ async def razorpay_link_status(link_id: str, user: User = Depends(get_current_us
         )
         await notify(user.id, "Purchase successful",
                      f"{int(tx.credits)} credits added to your wallet.", kind="purchase")
+        dc = (tx_doc.get("metadata") or {}).get("discount")
+        if dc and dc.get("code"):
+            await increment_use(dc["code"])
         tx.credited = True
     return {
         "status": status,
@@ -171,7 +184,31 @@ async def verify_razorpay(req: RazorpayVerifyRequest, user: User = Depends(get_c
             {"$set": {"status": "paid", "credited": True, "payment_id": req.razorpay_payment_id, "updated_at": now_iso()}},
         )
         await notify(user.id, "Purchase successful", f"{int(tx.credits)} credits added to your wallet.", kind="purchase")
+        dc = (tx_doc.get("metadata") or {}).get("discount")
+        if dc and dc.get("code"):
+            await increment_use(dc["code"])
     return {"ok": True, "credits": tx.credits}
+
+
+@router.get("/fx-rate")
+async def fx_rate():
+    """Current USD→INR rate (live, cached) so the Billing page can show ₹ prices."""
+    return {"rate": await get_usd_to_inr(), "currency": "INR"}
+
+
+class DiscountCheckReq(BaseModel):
+    code: str
+    pack_slug: str
+
+
+@router.post("/discount/validate")
+async def discount_validate(req: DiscountCheckReq, user: User = Depends(get_current_user)):
+    """Customer-facing: check a discount code against a pack's price (no redemption)."""
+    pack = await _get_pack(req.pack_slug, "usd")
+    res = await validate_discount(req.code, float(pack["price"]), target_kind=f"pack:{req.pack_slug}")
+    if res.get("ok"):
+        res["final_inr"] = round_up_inr(res["final_usd"] * await get_usd_to_inr())
+    return res
 
 
 @router.get("/plans")
@@ -198,6 +235,7 @@ async def payment_history(user: User = Depends(get_current_user), limit: int = 5
 from services.payments_service import (
     create_subscription as _rzp_create_sub,
     handle_razorpay_webhook as _rzp_webhook,
+    handle_revenuecat_webhook as _revenuecat_webhook,
     verify_apple_receipt as _apple_verify,
     verify_google_receipt as _google_verify,
     DEFAULT_PRODUCT_MAP,
@@ -219,6 +257,16 @@ async def razorpay_sub_webhook(request: Request):
     res = await _rzp_webhook(body, signature)
     if not res.get("ok"):
         raise HTTPException(400, res.get("reason", "webhook failed"))
+    return res
+
+
+@router.post("/webhook/revenuecat", include_in_schema=False)
+async def revenuecat_webhook(request: Request):
+    auth_header = request.headers.get("authorization", "")
+    body = await request.json()
+    res = await _revenuecat_webhook(body, auth_header)
+    if not res.get("ok"):
+        raise HTTPException(401, res.get("reason", "webhook failed"))
     return res
 
 

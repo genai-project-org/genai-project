@@ -42,8 +42,8 @@ DEFAULT_PRICING = [
     {"_id": "counseling_career",      "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Career counseling"},
     {"_id": "counseling_psychology",  "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Wellness counseling"},
     {"_id": "counseling_academic",    "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Academic counseling"},
-    {"_id": "builder_create",         "credit_cost": 15, "provider": "anthropic", "category": "builder",    "description": "Code Builder project generation"},
-    {"_id": "builder_refine",         "credit_cost": 8,  "provider": "anthropic", "category": "builder",    "description": "Code Builder refine"},
+    {"_id": "builder_create",         "credit_cost": 5,  "provider": "anthropic", "category": "builder",    "description": "Code Builder project generation"},
+    {"_id": "builder_refine",         "credit_cost": 3,  "provider": "anthropic", "category": "builder",    "description": "Code Builder refine"},
 ]
 
 # Default plans. Free is ONE-TIME (no monthly refill). USD pricing.
@@ -137,8 +137,10 @@ async def list_plans() -> list:
 
 
 async def set_plan(plan_id: str, updates: Dict[str, Any]) -> None:
+    # price_usd / price_inr / billing_period are intentionally NOT editable after
+    # creation — pricing is fixed, so admin PATCH cannot change them (UI locks them too).
     allowed = {"name", "monthly_credits", "window_hours", "window_credits",
-               "price_usd", "price_inr", "billing_period", "is_free", "one_time", "priority"}
+               "is_free", "one_time", "priority"}
     clean = {k: v for k, v in updates.items() if k in allowed}
     clean["updated_at"] = now_iso()
     await plans_col.update_one({"_id": plan_id}, {"$set": clean}, upsert=True)
@@ -220,6 +222,43 @@ async def check_window(user_id: str, needed: float) -> Dict[str, Any]:
     return {"ok": ok, "remaining": remaining, **status}
 
 
+async def _guard(user_id: str, cost: float) -> Dict[str, Any]:
+    """Enforce window + wallet balance for `cost`. Raises 429/402. Returns window status.
+    Deducts nothing — the caller (spend) does the actual charge."""
+    window = await check_window(user_id, cost)
+    if not window["ok"]:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "message": "Usage window exhausted",
+                "resets_at": window["resets_at"],
+                "window_hours": window["window_hours"],
+                "used": window["used"],
+                "cap": window["cap"],
+                "resets_in_ms": _ms_until(window["resets_at"]),
+            },
+        )
+    wallet = await get_or_create_wallet(user_id)
+    if wallet.total < cost:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "message": "Insufficient credits — please subscribe or top-up",
+                "balance": wallet.total,
+                "needed": cost,
+            },
+        )
+    return window
+
+
+async def precheck(user_id: str, service_key: str) -> None:
+    """Gate before expensive work: raise 429/402 if the user can't afford
+    `service_key`, WITHOUT deducting. spend() still does the real charge after."""
+    cost = float((await resolve_cost(service_key))["credit_cost"])
+    if cost > 0:
+        await _guard(user_id, cost)
+
+
 # ------------------------ central spend ------------------------
 async def spend(
     user_id: str,
@@ -244,32 +283,7 @@ async def spend(
     window = None
 
     if cost > 0:
-        # Window check
-        window = await check_window(user_id, cost)
-        if not window["ok"]:
-            hrs_left_ms = _ms_until(window["resets_at"])
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail={
-                    "message": "Usage window exhausted",
-                    "resets_at": window["resets_at"],
-                    "window_hours": window["window_hours"],
-                    "used": window["used"],
-                    "cap": window["cap"],
-                    "resets_in_ms": hrs_left_ms,
-                },
-            )
-        # Wallet balance
-        wallet = await get_or_create_wallet(user_id)
-        if wallet.total < cost:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits — please subscribe or top-up",
-                    "balance": wallet.total,
-                    "needed": cost,
-                },
-            )
+        window = await _guard(user_id, cost)
         # Deduct
         wallet = await deduct_credits(user_id, cost, "ai_usage", description or pricing.get("description", service_key), ref_id)
         # Advance window usage

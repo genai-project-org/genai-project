@@ -13,7 +13,7 @@ import re
 import hashlib
 import logging
 from typing import List, Dict, Any, Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.llm_client import LlmChat, UserMessage
 from db import db, now_iso
 from services.knowledge_retriever import retrieve, store as kb_store
 from services.settings_service import get_setting
@@ -69,8 +69,10 @@ def _extract_json(text: str) -> Dict[str, Any]:
     raise ValueError("LLM did not return JSON")
 
 
-async def generate_project(user_id: str, prompt: str) -> Dict[str, Any]:
-    """Retrieve-first project generation."""
+async def generate_project(user_id: str, prompt: str, gate=None) -> Dict[str, Any]:
+    """Retrieve-first project generation. `gate` (if given) is awaited right before
+    the expensive LLM call — used to enforce usage limits only on a cache miss, so
+    cached hits stay free."""
     # (1) Data lake — cross-user semantic reuse
     if await get_setting("kb_enabled", True):
         hit = await retrieve("builder_generate", prompt, user_id=user_id)
@@ -82,6 +84,8 @@ async def generate_project(user_id: str, prompt: str) -> Dict[str, Any]:
     cached = await builder_cache_col.find_one({"_id": key})
     if cached:
         return {"cached": True, "source": "cache", **cached["payload"]}
+    if gate:
+        await gate()
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"builder-gen-{key[:10]}",

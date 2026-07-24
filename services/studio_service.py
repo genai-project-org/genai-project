@@ -5,14 +5,14 @@ import time
 import uuid
 from pathlib import Path
 from typing import List, Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+from services.llm_client import LlmChat, UserMessage, OpenAIImageGeneration
 from google import genai
 from google.genai import types as genai_types
 from services.knowledge_retriever import retrieve, store
 from services.settings_service import get_setting
 from services.capability_manifest import with_capability
 from services.provider_selector import pick_provider
+from services.ai_service import resolve_provider_model
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ SUMMARIZE_SYSTEM = (
 )
 
 
-async def summarize_text(session_id: str, text: str, style: str = "default", user_id: Optional[str] = None) -> dict:
+async def summarize_text(session_id: str, text: str, style: str = "default", user_id: Optional[str] = None, model_override: Optional[str] = None) -> dict:
     """Summarize text. Returns {response, source, score} where source is 'kb'|'llm'."""
     kb_kind = f"studio_summarize:{style}"
     if await get_setting("kb_enabled", True):
@@ -49,7 +49,7 @@ async def summarize_text(session_id: str, text: str, style: str = "default", use
         session_id=session_id,
         system_message=with_capability(system_prompt),
     )
-    provider, model = await pick_provider(user_id)
+    provider, model = resolve_provider_model(model_override) or await pick_provider(user_id)
     chat = chat.with_model(provider, model)
     resp = await chat.send_message(UserMessage(text=text))
     summary = resp if isinstance(resp, str) else getattr(resp, "content", str(resp))

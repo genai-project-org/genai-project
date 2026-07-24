@@ -52,6 +52,11 @@ async def delete_discount(code: str) -> bool:
     return res.deleted_count > 0
 
 
+async def increment_use(code: str) -> None:
+    """Count one redemption (called only after a payment is confirmed)."""
+    await discounts_col.update_one({"_id": (code or "").upper()}, {"$inc": {"uses": 1}})
+
+
 async def validate(code: str, base_usd: float, target_kind: Optional[str] = None) -> Dict[str, Any]:
     """Return {ok, discount_usd, final_usd, reason?}."""
     code = (code or "").strip().upper()

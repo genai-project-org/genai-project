@@ -4,12 +4,13 @@ All three call `_credit_plan(user_id, plan_id, source, ref_id)` on success — o
 """
 import os
 import json
+import math
 import logging
 from typing import Optional, Dict, Any
 import httpx
 from bson import ObjectId
 import razorpay
-from db import db, now_iso, users_col
+from db import db, now_iso, now_utc, users_col
 from services.pricing_engine import get_plan, assign_plan
 from services.data_lake import log_event
 
@@ -20,11 +21,46 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 APPLE_APP_STORE_SHARED_SECRET = os.environ.get("APPLE_APP_STORE_SHARED_SECRET", "")
 GOOGLE_PLAY_SA_JSON = os.environ.get("GOOGLE_PLAY_SA_JSON", "")
 GOOGLE_PLAY_PACKAGE = os.environ.get("GOOGLE_PLAY_PACKAGE", "com.iemaai.app")
+REVENUECAT_WEBHOOK_AUTH = os.environ.get("REVENUECAT_WEBHOOK_AUTH", "")
 
 subscriptions_col = db["subscriptions"]
 iap_receipts_col = db["iap_receipts"]
 
 _rzp = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if RAZORPAY_KEY_ID else None
+
+
+# ==================== USD → INR live FX (shared by packs + subscriptions) ====================
+FX_FALLBACK = float(os.environ.get("USD_TO_INR_RATE", "85"))   # used if the live API fails
+FX_PAD = float(os.environ.get("USD_TO_INR_PAD", "1.02"))       # upward buffer so a dip never undercharges
+FX_TTL_SECONDS = int(os.environ.get("USD_TO_INR_TTL", str(12 * 3600)))
+_fx_cache = {"rate": None, "at": None}
+
+
+async def get_usd_to_inr() -> float:
+    """Live USD→INR from a free no-key API (open.er-api.com), cached ~12h, padded
+    slightly, falling back to the env rate on any failure so checkout never breaks."""
+    c = _fx_cache
+    if c["rate"] and c["at"] and (now_utc() - c["at"]).total_seconds() < FX_TTL_SECONDS:
+        return c["rate"]
+    try:
+        async with httpx.AsyncClient(timeout=6) as http:
+            r = await http.get("https://open.er-api.com/v6/latest/USD")
+            r.raise_for_status()
+            data = r.json()
+            inr = float(data["rates"]["INR"])
+            if data.get("result") != "success" or inr <= 0:
+                raise ValueError("bad FX payload")
+            rate = round(inr * FX_PAD, 2)
+            _fx_cache.update(rate=rate, at=now_utc())
+            return rate
+    except Exception as e:
+        logger.warning(f"FX fetch failed, using fallback {FX_FALLBACK}: {e}")
+        return c["rate"] or FX_FALLBACK
+
+
+def round_up_inr(amount_inr: float) -> int:
+    """Round INR UP to the nearest ₹100 — clean price (₹1,968 → ₹2,000), never undercharge."""
+    return int(math.ceil(amount_inr / 100.0) * 100)
 
 
 # ==================== plan crediting ====================
@@ -46,25 +82,47 @@ async def _credit_plan(user_id: str, plan_id: str, source: str, ref_id: str) -> 
                     payload={"plan_id": plan_id, "source": source, "ref_id": ref_id})
 
 
+async def _revoke_plan(user_id: str, source: str, ref_id: str) -> None:
+    """Downgrade to free. No other path in this codebase does this today —
+    cancellations/expirations previously only flipped `subscriptions.status`
+    without ever touching `users.plan`."""
+    await users_col.update_one({"_id": ObjectId(user_id)}, {"$set": {"plan": "free", "plan_since": now_iso()}})
+    await subscriptions_col.update_one(
+        {"user_id": user_id, "source": source},
+        {"$set": {"status": "cancelled", "revoked_at": now_iso(), "revoked_ref_id": ref_id}},
+    )
+    await log_event("subscription_revoked", user_id=user_id,
+                    payload={"source": source, "ref_id": ref_id})
+
+
 # ==================== Razorpay subscriptions ====================
 _razorpay_plan_map_col = db["razorpay_plan_map"]  # {_id: iema_plan_id, rzp_plan_id}
 
 
 async def get_or_create_rzp_plan(iema_plan_id: str) -> str:
-    """Ensure a Razorpay plan exists for our IEMA plan. Returns Razorpay plan_id."""
+    """Ensure a Razorpay plan exists for our IEMA plan at the CURRENT price.
+    Razorpay plans are immutable, so when the live INR amount (or period) no longer
+    matches the cached plan, we create a fresh plan and repoint the map — keeping
+    checkout in sync with the Billing page's live rate."""
     if not _rzp:
         raise RuntimeError("Razorpay not configured")
-    existing = await _razorpay_plan_map_col.find_one({"_id": iema_plan_id})
-    if existing and existing.get("rzp_plan_id"):
-        return existing["rzp_plan_id"]
     plan = await get_plan(iema_plan_id)
     if not plan or plan.get("is_free"):
         raise RuntimeError(f"Cannot subscribe to plan `{iema_plan_id}`")
     period = "yearly" if plan.get("billing_period") == "annual" else "monthly"
-    # Razorpay India accounts only support INR. Convert USD → INR at ~₹85/USD.
+    # Razorpay India accounts only support INR. Convert USD → INR at the live rate.
     price_usd = float(plan.get("price_usd") or 0)
-    price_inr = float(plan.get("price_inr") or (price_usd * 85))
-    amount = int(round(price_inr * 100))  # paise
+    rate = await get_usd_to_inr()
+    price_inr = round_up_inr(float(plan.get("price_inr") or (price_usd * rate)))
+    amount = price_inr * 100  # paise
+
+    existing = await _razorpay_plan_map_col.find_one({"_id": iema_plan_id})
+    if existing and existing.get("rzp_plan_id") and existing.get("amount") == amount and existing.get("period") == period:
+        return existing["rzp_plan_id"]
+
+    # First time, or price/period changed → make a fresh immutable Razorpay plan.
+    # ponytail: old plans are left dangling in the Razorpay account (can't delete once
+    # subscribed); at low volume that's fine, revisit if the plan list balloons.
     rzp_plan = _rzp.plan.create({
         "period": period, "interval": 1,
         "item": {"name": plan.get("name", iema_plan_id), "amount": amount, "currency": "INR",
@@ -73,7 +131,8 @@ async def get_or_create_rzp_plan(iema_plan_id: str) -> str:
     rzp_id = rzp_plan["id"]
     await _razorpay_plan_map_col.update_one(
         {"_id": iema_plan_id},
-        {"$set": {"rzp_plan_id": rzp_id, "created_at": now_iso()}}, upsert=True,
+        {"$set": {"rzp_plan_id": rzp_id, "amount": amount, "period": period,
+                  "currency": "INR", "created_at": now_iso()}}, upsert=True,
     )
     return rzp_id
 
@@ -214,6 +273,44 @@ async def verify_google_receipt(user_id: str, product_id: str, purchase_token: s
     })
     await _credit_plan(user_id, iema_plan, "google", purchase_token)
     return {"ok": True, "plan_id": iema_plan, "product_id": product_id}
+
+
+# ==================== RevenueCat webhook (Observer Mode) ====================
+# The app already grants credits via verify_apple_receipt()/verify_google_receipt()
+# above — this is a second, independent path so RevenueCat's own view of
+# subscription state (renewals, cancellations, billing issues) can also drive
+# entitlement. `app_user_id` is expected to equal our Mongo user `_id` string,
+# since the mobile app calls `Purchases.logIn(user.id)` after login.
+_REVENUECAT_GRANT_EVENTS = {"INITIAL_PURCHASE", "RENEWAL", "PRODUCT_CHANGE", "UNCANCELLATION"}
+_REVENUECAT_REVOKE_EVENTS = {"CANCELLATION", "EXPIRATION"}
+
+
+async def handle_revenuecat_webhook(body: Dict[str, Any], auth_header: str) -> Dict[str, Any]:
+    if not REVENUECAT_WEBHOOK_AUTH or auth_header != REVENUECAT_WEBHOOK_AUTH:
+        return {"ok": False, "reason": "bad auth"}
+
+    event = body.get("event") or {}
+    event_type = event.get("type", "")
+    user_id = event.get("app_user_id")
+    product_id = event.get("product_id")
+    # RevenueCat resends webhooks on failure; `event.id` is unique per delivery
+    # and is what we key idempotency on (a renewal reuses the same product_id,
+    # so we can't dedupe on that).
+    ref_id = event.get("id") or f"{user_id}:{product_id}:{event.get('purchased_at_ms')}"
+
+    if not user_id or not ObjectId.is_valid(user_id):
+        logger.info(f"RevenueCat webhook {event_type} for non-account app_user_id={user_id} — skipped")
+        return {"ok": True, "event": event_type, "skipped": "no matching account"}
+
+    if event_type in _REVENUECAT_GRANT_EVENTS:
+        iema_plan = DEFAULT_PRODUCT_MAP.get(product_id)
+        if not iema_plan:
+            logger.warning(f"RevenueCat webhook {event_type}: unknown product_id={product_id}")
+        else:
+            await _credit_plan(user_id, iema_plan, "revenuecat", ref_id)
+    elif event_type in _REVENUECAT_REVOKE_EVENTS:
+        await _revoke_plan(user_id, "revenuecat", ref_id)
+    return {"ok": True, "event": event_type}
 
 
 # ==================== admin queries ====================

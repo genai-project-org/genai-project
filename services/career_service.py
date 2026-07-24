@@ -9,7 +9,7 @@ import hashlib
 import logging
 from typing import List, Optional, Dict, Any
 import httpx
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.llm_client import LlmChat, UserMessage
 from db import db, now_iso
 from services.knowledge_retriever import retrieve, store as kb_store
 from services.settings_service import get_setting

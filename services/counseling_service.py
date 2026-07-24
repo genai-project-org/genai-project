@@ -8,7 +8,7 @@ Every call:
 import os
 import logging
 from typing import Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.llm_client import LlmChat, UserMessage
 from services.knowledge_retriever import retrieve, store as kb_store
 from services.settings_service import get_setting
 from services.capability_manifest import with_capability

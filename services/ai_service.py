@@ -4,7 +4,7 @@ import base64
 import logging
 from typing import AsyncGenerator, List, Dict, Optional
 import httpx
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone, ImageContent
+from services.llm_client import LlmChat, UserMessage, TextDelta, StreamDone, ImageContent
 from services.capability_manifest import with_capability
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,24 @@ DEFAULT_PROVIDER = os.environ.get("DEFAULT_AI_PROVIDER", "anthropic")
 DEFAULT_MODEL = os.environ.get("DEFAULT_AI_MODEL", "claude-haiku-4-5-20251001")
 FALLBACK_PROVIDER = os.environ.get("FALLBACK_AI_PROVIDER", "openai")
 FALLBACK_MODEL = os.environ.get("FALLBACK_AI_MODEL", "gpt-5-mini")
+
+# User-facing model catalog. provider=None ("iema") means auto-route via the default path.
+MODEL_CATALOG = [
+    {"id": "iema",                       "provider": None,        "name": "IEMA Knowledge Engine", "label": "Recommended", "description": "Smart auto-routing (recommended)"},
+    {"id": "claude-haiku-4-5-20251001",  "provider": "anthropic", "name": "Claude Haiku 4.5",      "label": "Fast",     "description": "Quick everyday answers", "default": True},
+    {"id": "claude-sonnet-4-5-20250929", "provider": "anthropic", "name": "Claude Sonnet 4.5",     "label": "Balanced", "description": "Deeper reasoning, still snappy"},
+    {"id": "gpt-5",                      "provider": "openai",    "name": "GPT-5",                 "label": "Powerful", "description": "Hardest tasks & long context"},
+    {"id": "gpt-5-mini",                 "provider": "openai",    "name": "GPT-5 mini",            "label": "Quick",    "description": "Lightweight versatile model"},
+]
+_MODEL_BY_ID = {m["id"]: m for m in MODEL_CATALOG}
+
+
+def resolve_provider_model(model_id: Optional[str]):
+    """Map a catalog model id to (provider, model). Returns None for auto-route (iema/unknown)."""
+    sel = _MODEL_BY_ID.get(model_id)
+    if sel and sel["provider"]:
+        return sel["provider"], sel["id"]
+    return None
 
 SYSTEM_PROMPT = (
     "You are IEMA.ai, a premium AI assistant. Be concise, helpful, and precise. "
@@ -54,7 +72,10 @@ async def stream_ai_response(
     attachments: list of {"url": ..., "content_type": "image/png"} — fetched and passed as base64.
     """
     tried = []
-    providers_to_try = [(DEFAULT_PROVIDER, model_override or DEFAULT_MODEL), (FALLBACK_PROVIDER, FALLBACK_MODEL)]
+    primary = resolve_provider_model(model_override) or (DEFAULT_PROVIDER, DEFAULT_MODEL)
+    providers_to_try = [primary]
+    if (FALLBACK_PROVIDER, FALLBACK_MODEL) != primary:  # dedupe when user picked the fallback
+        providers_to_try.append((FALLBACK_PROVIDER, FALLBACK_MODEL))
 
     # Preload attachments to base64 once
     image_contents = []

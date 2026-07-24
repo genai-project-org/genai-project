@@ -23,6 +23,7 @@ class SummarizeRequest(BaseModel):
     text: Optional[str] = Field(default=None, max_length=40000)
     url: Optional[str] = Field(default=None, max_length=2048)
     style: str = Field(default="default")  # default | eli5 | executive
+    model: Optional[str] = None  # catalog model id; None/iema = auto-route
 
 
 class ImageGenRequest(BaseModel):
@@ -65,7 +66,7 @@ async def studio_summarize(req: SummarizeRequest, user: User = Depends(get_curre
         if len(text) < 20:
             raise HTTPException(400, "Provide at least 20 characters of text or a fetchable URL")
         session_id = f"studio-sum-{user.id}-{uuid.uuid4().hex[:8]}"
-        result = await summarize_text(session_id, text, req.style, user_id=user.id)
+        result = await summarize_text(session_id, text, req.style, user_id=user.id, model_override=req.model)
         summary = result["response"]
         source = result["source"]
         billing = await spend(
@@ -165,6 +166,8 @@ async def studio_image(req: ImageGenRequest, user: User = Depends(get_current_us
         raise
     except Exception as e:
         logger.exception("Image gen failed")
+        if "moderation_blocked" in str(e):
+            raise HTTPException(400, "This prompt was blocked by the image safety filter. Please rephrase and try again.")
         raise HTTPException(500, f"Image gen failed: {str(e)[:200]}")
 
 
@@ -200,12 +203,18 @@ async def studio_video(req: VideoGenRequest, user: User = Depends(get_current_us
         video_url = video["url_rel"]
         if is_configured():
             try:
+                with open(video["path"], "rb") as f:
+                    data = f.read()
                 key = await upload_bytes(
-                    open(video["path"], "rb").read(),
-                    video["filename"], "video/mp4",
+                    data, video["filename"], "video/mp4",
                     folder=f"studio-videos/{user.id}",
                 )
                 video_url = get_signed_url(key, expires_in=60 * 60 * 24 * 7)
+                # In S3 now — the local copy is redundant, drop it.
+                try:
+                    os.remove(video["path"])
+                except OSError as e:
+                    logger.warning(f"Could not delete local video {video['path']}: {e}")
             except Exception as e:
                 logger.warning(f"S3 upload failed, using local URL: {e}")
         await log_event(

@@ -19,7 +19,7 @@ from services.builder_service import (
 from db import db as _db
 builder_templates_col = _db["builder_templates"]
 from services.credit_service import has_credits, deduct_credits
-from services.pricing_engine import spend
+from services.pricing_engine import spend, precheck
 from services.storage_service import upload_bytes, upload_bytes_at_key, get_signed_url, is_configured
 from services.data_lake import log_event
 
@@ -153,7 +153,14 @@ async def list_projects(user: User = Depends(get_current_user)):
 
 @router.post("/projects")
 async def create_project(req: CreateProjectRequest, user: User = Depends(get_current_user)):
-    result = await generate_project(user.id, req.prompt)
+    # gate=... enforces the usage window right before the LLM call (cache misses only),
+    # so an over-window user gets 429 without burning an LLM call or orphaning a project.
+    result = await generate_project(
+        user.id, req.prompt,
+        gate=lambda: precheck(user.id, "builder_create"),
+    )
+    was_cached = result.get("cached", False)
+    billing = await spend(user.id, "builder_create", skip_charge=was_cached, description=f"Builder: {result['name']}")
     doc = {
         "user_id": user.id,
         "name": result["name"],
@@ -168,8 +175,6 @@ async def create_project(req: CreateProjectRequest, user: User = Depends(get_cur
     }
     ins = await builder_projects_col.insert_one(doc)
     doc["_id"] = ins.inserted_id
-    was_cached = result.get("cached", False)
-    billing = await spend(user.id, "builder_create", skip_charge=was_cached, description=f"Builder: {result['name']}")
     await log_event("builder_create", user_id=user.id,
                     payload={"prompt": req.prompt[:400], "cached": was_cached,
                              "name": result["name"], "files": len(result["files"])})
@@ -205,12 +210,13 @@ async def save_files(project_id: str, req: SaveFilesRequest, user: User = Depend
 @router.post("/projects/{project_id}/refine")
 async def refine(project_id: str, req: RefineRequest, user: User = Depends(get_current_user)):
     doc = await _load_project(user.id, project_id)
+    await precheck(user.id, "builder_refine")  # gate before the LLM call
     new_files = await refine_project(doc.get("files", []), req.instruction, session_id=f"builder-refine-{project_id}")
+    billing = await spend(user.id, "builder_refine", description="Builder refine")
     await builder_projects_col.update_one(
         {"_id": ObjectId(project_id)},
         {"$set": {"files": new_files, "file_count": len(new_files), "updated_at": now_iso()}},
     )
-    billing = await spend(user.id, "builder_refine", description="Builder refine")
     await log_event("builder_refine", user_id=user.id,
                     payload={"project_id": project_id, "instruction": req.instruction[:400]})
     return {"files": new_files, "credits_used": billing["credits_used"], "balance": billing["balance"]}

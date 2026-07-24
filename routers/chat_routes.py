@@ -13,12 +13,17 @@ from models import (
 )
 from services.credit_service import has_credits, deduct_credits
 from services.pricing_engine import spend, resolve_cost
-from services.ai_service import stream_ai_response
+from services.ai_service import stream_ai_response, MODEL_CATALOG
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
+
+
+@router.get("/models")
+async def list_models():
+    return {"items": [{"id": m["id"], "name": m["name"], "label": m["label"], "description": m["description"], "default": m.get("default", False)} for m in MODEL_CATALOG]}
 
 
 @router.get("/conversations")

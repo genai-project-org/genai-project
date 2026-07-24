@@ -8,6 +8,7 @@ from models import User
 from services.counseling_service import counsel
 from services.pricing_engine import spend
 from services.data_lake import log_event
+from db import counseling_history_col, now_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/counseling", tags=["counseling"])
@@ -43,6 +44,12 @@ async def counsel_route(req: CounselRequest, user: User = Depends(get_current_us
         payload={"chars_in": len(req.message), "chars_out": len(result["response"]),
                  "source": result["source"], "score": result.get("score")},
     )
+    # Persist for cross-device history (see GET/DELETE /counseling/history)
+    await counseling_history_col.insert_one({
+        "user_id": user.id, "mode": req.mode,
+        "question": req.message, "answer": result["response"],
+        "created_at": now_iso(),
+    })
     return {
         "response": result["response"],
         "mode": req.mode,
@@ -53,6 +60,20 @@ async def counsel_route(req: CounselRequest, user: User = Depends(get_current_us
         "balance": billing["balance"],
         "disclaimer": _disclaimer(req.mode),
     }
+
+
+@router.get("/history")
+async def counseling_history(limit: int = 50, user: User = Depends(get_current_user)):
+    cursor = counseling_history_col.find({"user_id": user.id}).sort("created_at", -1).limit(min(limit, 100))
+    items = [{"id": str(d["_id"]), "mode": d["mode"], "question": d["question"],
+              "answer": d["answer"], "created_at": d.get("created_at")} async for d in cursor]
+    return {"items": items}
+
+
+@router.delete("/history")
+async def clear_counseling_history(user: User = Depends(get_current_user)):
+    await counseling_history_col.delete_many({"user_id": user.id})
+    return {"ok": True}
 
 
 def _disclaimer(mode: str) -> str:
