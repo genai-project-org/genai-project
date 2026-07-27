@@ -21,15 +21,35 @@ from openai import AsyncOpenAI
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+# Ceiling for non-streaming calls; above this the SDKs demand streaming.
+NONSTREAM_MAX_TOKENS = int(os.environ.get("LLM_NONSTREAM_MAX_TOKENS", "16000"))
+# Gemini speaks the OpenAI chat-completions dialect here, so provider "google"
+# reuses the AsyncOpenAI path instead of pulling in a third request builder.
+GEMINI_BASE_URL = os.environ.get(
+    "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
+)
+
+_KEY_ENV = {
+    "anthropic": ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
+    "openai": ("OPENAI_API_KEY", OPENAI_API_KEY),
+    "google": ("GEMINI_API_KEY", GEMINI_API_KEY),
+}
 
 
 def _require_key(provider: str) -> str:
-    key = ANTHROPIC_API_KEY if provider == "anthropic" else OPENAI_API_KEY
+    env, key = _KEY_ENV.get(provider, _KEY_ENV["openai"])
     if not key:
-        env = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
         raise RuntimeError(f"{env} is not set — add it to backend/.env and restart.")
     return key
+
+
+def _openai_client(provider: str) -> AsyncOpenAI:
+    """AsyncOpenAI pointed at OpenAI or at Gemini's OpenAI-compatible endpoint."""
+    if provider == "google":
+        return AsyncOpenAI(api_key=_require_key("google"), base_url=GEMINI_BASE_URL)
+    return AsyncOpenAI(api_key=_require_key("openai"))
 
 
 # ---- emergent-compatible message types -----------------------------------
@@ -83,10 +103,14 @@ class LlmChat:
         self.session_id = session_id  # kept for signature parity; not used by SDKs
         self.provider = "anthropic"
         self.model = "claude-haiku-4-5-20251001"
+        self.max_tokens = MAX_TOKENS
 
-    def with_model(self, provider: str, model: str) -> "LlmChat":
+    def with_model(self, provider: str, model: str,
+                   max_tokens: Optional[int] = None) -> "LlmChat":
         self.provider = provider
         self.model = model
+        # Thinking-by-default models need more headroom than LLM_MAX_TOKENS.
+        self.max_tokens = max_tokens or MAX_TOKENS
         return self
 
     # -- request builders --
@@ -121,22 +145,25 @@ class LlmChat:
     # -- non-streaming --
 
     async def send_message(self, msg: UserMessage) -> str:
+        # The SDKs refuse a non-streaming request whose max_tokens implies a >10min
+        # run, so clamp here. Only stream_message() gets the full per-model budget.
+        budget = min(self.max_tokens, NONSTREAM_MAX_TOKENS)
         if self.provider == "anthropic":
             client = AsyncAnthropic(api_key=_require_key("anthropic"))
             resp = await client.messages.create(
                 model=self.model,
-                max_tokens=MAX_TOKENS,
+                max_tokens=budget,
                 system=self.system or None,
                 messages=[{"role": "user", "content": self._anthropic_content(msg)}],
             )
             return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-        client = AsyncOpenAI(api_key=_require_key("openai"))
+        client = _openai_client(self.provider)
         resp = await client.chat.completions.create(
             model=self.model,
             messages=self._openai_messages(msg),
             # ponytail: gpt-5/reasoning models require max_completion_tokens (not max_tokens);
             # bump LLM_MAX_TOKENS if long answers get truncated.
-            max_completion_tokens=MAX_TOKENS,
+            max_completion_tokens=budget,
         )
         return resp.choices[0].message.content or ""
 
@@ -147,7 +174,7 @@ class LlmChat:
             client = AsyncAnthropic(api_key=_require_key("anthropic"))
             async with client.messages.stream(
                 model=self.model,
-                max_tokens=MAX_TOKENS,
+                max_tokens=self.max_tokens,
                 system=self.system or None,
                 messages=[{"role": "user", "content": self._anthropic_content(msg)}],
             ) as stream:
@@ -156,11 +183,11 @@ class LlmChat:
                         yield TextDelta(content=text)
             yield StreamDone()
             return
-        client = AsyncOpenAI(api_key=_require_key("openai"))
+        client = _openai_client(self.provider)
         stream = await client.chat.completions.create(
             model=self.model,
             messages=self._openai_messages(msg),
-            max_completion_tokens=MAX_TOKENS,
+            max_completion_tokens=self.max_tokens,
             stream=True,
         )
         async for chunk in stream:
@@ -175,19 +202,25 @@ class LlmChat:
 # ---- image generation ------------------------------------------------------
 
 class OpenAIImageGeneration:
-    def __init__(self, api_key: Optional[str] = None):
-        self._client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    def __init__(self, api_key: Optional[str] = None, provider: str = "openai"):
+        # Gemini's OpenAI-compatible endpoint serves images.generate too, so the
+        # same client class covers both providers.
+        self.provider = provider
+        self._client = _openai_client(provider)
 
     async def generate_images(self, prompt: str, model: str = "gpt-image-1",
                               number_of_images: int = 1, quality: str = "low") -> List[bytes]:
+        extra = {}
+        if self.provider == "openai":
+            # quality/moderation are OpenAI-only; Gemini's compat layer rejects them.
+            # ponytail: gpt-image-1 defaults to moderation="auto" which over-blocks
+            # benign prompts; "low" is the least-restrictive supported setting.
+            extra = {"quality": quality, "moderation": "low"}
         resp = await self._client.images.generate(
             model=model,
             prompt=prompt,
             n=number_of_images,
-            quality=quality,
-            # ponytail: gpt-image-1 defaults to moderation="auto" which over-blocks
-            # benign prompts; "low" is the least-restrictive supported setting.
-            moderation="low",
+            **extra,
         )
         return [base64.b64decode(d.b64_json) for d in resp.data]
 
@@ -213,6 +246,17 @@ def demo():
     assert om[0] == {"role": "system", "content": "sys"}
     assert om[1]["role"] == "user"
     assert om[1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    # gemini rides the openai request builder, so only provider/base_url differ
+    chat_g = LlmChat(system_message="sys").with_model("google", "gemini-3.6-flash")
+    assert chat_g.provider == "google"
+    assert chat_g._openai_messages(UserMessage(text="hi"))[0]["role"] == "system"
+    assert set(_KEY_ENV) == {"anthropic", "openai", "google"}
+
+    # per-model output budget: explicit wins, omitted/None falls back to the env default
+    assert chat.max_tokens == MAX_TOKENS
+    assert LlmChat().with_model("anthropic", "claude-opus-5", 32000).max_tokens == 32000
+    assert LlmChat().with_model("anthropic", "claude-x", None).max_tokens == MAX_TOKENS
 
     print("llm_client self-check OK")
 

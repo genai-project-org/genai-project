@@ -16,12 +16,20 @@ FALLBACK_PROVIDER = os.environ.get("FALLBACK_AI_PROVIDER", "openai")
 FALLBACK_MODEL = os.environ.get("FALLBACK_AI_MODEL", "gpt-5-mini")
 
 # User-facing model catalog. provider=None ("iema") means auto-route via the default path.
+# max_tokens: Claude 5 / Sonnet 5 run adaptive thinking by default, and thinking
+# shares the max_tokens budget with the answer — the 4096 default truncates them.
 MODEL_CATALOG = [
     {"id": "iema",                       "provider": None,        "name": "IEMA Knowledge Engine", "label": "Recommended", "description": "Smart auto-routing (recommended)"},
     {"id": "claude-haiku-4-5-20251001",  "provider": "anthropic", "name": "Claude Haiku 4.5",      "label": "Fast",     "description": "Quick everyday answers", "default": True},
     {"id": "claude-sonnet-4-5-20250929", "provider": "anthropic", "name": "Claude Sonnet 4.5",     "label": "Balanced", "description": "Deeper reasoning, still snappy"},
+    {"id": "claude-sonnet-5",            "provider": "anthropic", "name": "Claude Sonnet 5",       "label": "Smart",    "description": "Near-flagship quality, Sonnet speed", "max_tokens": 32000},
+    {"id": "claude-opus-5",              "provider": "anthropic", "name": "Claude Opus 5",         "label": "Flagship", "description": "Deepest reasoning & long context", "max_tokens": 32000},
     {"id": "gpt-5",                      "provider": "openai",    "name": "GPT-5",                 "label": "Powerful", "description": "Hardest tasks & long context"},
     {"id": "gpt-5-mini",                 "provider": "openai",    "name": "GPT-5 mini",            "label": "Quick",    "description": "Lightweight versatile model"},
+    {"id": "gpt-5-nano",                 "provider": "openai",    "name": "GPT-5 nano",            "label": "Cheapest", "description": "Simple tasks at the lowest cost", "max_tokens": 16000},
+    {"id": "gpt-4.1-mini",               "provider": "openai",    "name": "GPT-4.1 mini",          "label": "Snappy",   "description": "Fast replies, no reasoning delay"},
+    {"id": "gemini-3.6-flash",           "provider": "google",    "name": "Gemini 3.6 Flash",      "label": "Versatile", "description": "Google's fast multimodal model"},
+    {"id": "gemini-3.5-flash-lite",      "provider": "google",    "name": "Gemini 3.5 Flash Lite", "label": "Economy",  "description": "Lowest-cost Google model"},
 ]
 _MODEL_BY_ID = {m["id"]: m for m in MODEL_CATALOG}
 
@@ -32,6 +40,12 @@ def resolve_provider_model(model_id: Optional[str]):
     if sel and sel["provider"]:
         return sel["provider"], sel["id"]
     return None
+
+
+def max_tokens_for(model: str) -> Optional[int]:
+    """Per-model output budget, or None to use the client default."""
+    sel = _MODEL_BY_ID.get(model)
+    return sel.get("max_tokens") if sel else None
 
 SYSTEM_PROMPT = (
     "You are IEMA.ai, a premium AI assistant. Be concise, helpful, and precise. "
@@ -44,7 +58,7 @@ def _build_chat(session_id: str, provider: str, model: str) -> LlmChat:
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=with_capability(SYSTEM_PROMPT),
-    ).with_model(provider, model)
+    ).with_model(provider, model, max_tokens=max_tokens_for(model))
     return chat
 
 

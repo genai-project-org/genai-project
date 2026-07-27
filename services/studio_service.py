@@ -57,12 +57,25 @@ async def summarize_text(session_id: str, text: str, style: str = "default", use
     return {"response": summary, "source": "llm", "provider": provider}
 
 
-async def generate_image_bytes(prompt: str, quality: str = "low", n: int = 1) -> List[bytes]:
-    """Generate images via GPT-Image-1 through Emergent proxy."""
-    gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+# User-facing image-model picker. "quality" applies to OpenAI models only.
+IMAGE_MODEL_CATALOG = [
+    {"id": "gpt-image-1",           "provider": "openai", "name": "GPT Image 1",      "description": "Balanced quality and speed", "default": True},
+    {"id": "gpt-image-1-mini",      "provider": "openai", "name": "GPT Image 1 mini", "description": "Cheapest, quick drafts"},
+    {"id": "gpt-image-2",           "provider": "openai", "name": "GPT Image 2",      "description": "Newest, best detail"},
+    {"id": "gemini-2.5-flash-image", "provider": "google", "name": "Gemini Flash Image", "description": "Google's fast image model"},
+]
+_IMAGE_MODEL_BY_ID = {m["id"]: m for m in IMAGE_MODEL_CATALOG}
+DEFAULT_IMAGE_MODEL = next(m["id"] for m in IMAGE_MODEL_CATALOG if m.get("default"))
+
+
+async def generate_image_bytes(prompt: str, quality: str = "low", n: int = 1,
+                               model: Optional[str] = None) -> List[bytes]:
+    """Generate images with a catalog model; unknown ids fall back to the default."""
+    sel = _IMAGE_MODEL_BY_ID.get(model or "") or _IMAGE_MODEL_BY_ID[DEFAULT_IMAGE_MODEL]
+    gen = OpenAIImageGeneration(provider=sel["provider"])
     return await gen.generate_images(
         prompt=prompt,
-        model="gpt-image-1",
+        model=sel["id"],
         number_of_images=n,
         quality=quality,
     )

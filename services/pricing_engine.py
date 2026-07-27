@@ -44,6 +44,8 @@ DEFAULT_PRICING = [
     {"_id": "counseling_academic",    "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Academic counseling"},
     {"_id": "builder_create",         "credit_cost": 5,  "provider": "anthropic", "category": "builder",    "description": "Code Builder project generation"},
     {"_id": "builder_refine",         "credit_cost": 3,  "provider": "anthropic", "category": "builder",    "description": "Code Builder refine"},
+    {"_id": "builder_dyn_create",     "credit_cost": 5,  "provider": "anthropic", "category": "builder",    "description": "Dynamic Builder project generation"},
+    {"_id": "builder_dyn_refine",     "credit_cost": 3,  "provider": "anthropic", "category": "builder",    "description": "Dynamic Builder refine"},
 ]
 
 # Default plans. Free is ONE-TIME (no monthly refill). USD pricing.

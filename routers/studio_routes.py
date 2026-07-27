@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from auth import get_current_user
 from models import User
-from services.studio_service import summarize_text, generate_image_bytes
+from services.studio_service import summarize_text, generate_image_bytes, IMAGE_MODEL_CATALOG
 from services.pricing_engine import spend
 from services.storage_service import upload_bytes, get_signed_url, is_configured
 from services.data_lake import log_event
@@ -30,6 +30,7 @@ class ImageGenRequest(BaseModel):
     prompt: str = Field(min_length=3, max_length=1000)
     quality: str = Field(default="low")  # low | medium | high
     n: int = Field(default=1, ge=1, le=4)
+    model: Optional[str] = None  # unknown/omitted -> DEFAULT_IMAGE_MODEL
 
 
 @router.post("/summarize")
@@ -129,13 +130,20 @@ async def studio_history(kind: Optional[str] = None, limit: int = 30,
     return {"items": items}
 
 
+@router.get("/image-models")
+async def studio_image_models():
+    return {"items": [{"id": m["id"], "name": m["name"], "description": m["description"],
+                       "default": m.get("default", False)} for m in IMAGE_MODEL_CATALOG]}
+
+
 @router.post("/image")
 async def studio_image(req: ImageGenRequest, user: User = Depends(get_current_user)):
     service_key = f"studio_image_{req.quality}"
     if not is_configured():
         raise HTTPException(500, "Storage not configured")
     try:
-        images = await generate_image_bytes(req.prompt, quality=req.quality, n=req.n)
+        images = await generate_image_bytes(req.prompt, quality=req.quality, n=req.n,
+                                           model=req.model)
         urls = []
         for img_bytes in images:
             key = await upload_bytes(
