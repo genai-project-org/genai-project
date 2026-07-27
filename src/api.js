@@ -6,7 +6,7 @@ import { logout, setTokens } from "./store/slices/authSlice";
 const apiBase = Constants.expoConfig?.extra?.apiBaseUrl;
 
 if (!apiBase) {
-  throw new Error("apiBaseUrl missing from app.json");
+  throw new Error("apiBaseUrl missing from app.config.js");
 }
 
 const API_BASE = `${apiBase}/api`;

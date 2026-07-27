@@ -1,0 +1,86 @@
+export default {
+  expo: {
+    name: "IEMA.ai",
+    slug: "iema-ai",
+    version: "3.0.0",
+    orientation: "portrait",
+    icon: "./assets/logo.png",
+    userInterfaceStyle: "automatic",
+    scheme: "iemaai",
+    newArchEnabled: true,
+    splash: {
+      image: "./assets/logo.png",
+      resizeMode: "contain",
+      backgroundColor: "#0a0a0f"
+    },
+    assetBundlePatterns: [
+      "**/*"
+    ],
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: "com.iemaai.app",
+      buildNumber: "28",
+      usesAppleSignIn: true,
+      infoPlist: {
+        NSPhotoLibraryUsageDescription: "IEMA.ai needs access to your photos to attach images to your chats.",
+        NSCameraUsageDescription: "IEMA.ai needs access to your camera to attach photos to your chats.",
+        ITSAppUsesNonExemptEncryption: false
+      }
+    },
+    android: {
+      package: "com.iemaai.app",
+      versionCode: 1,
+      adaptiveIcon: {
+        foregroundImage: "./assets/logo.png",
+        backgroundColor: "#3b82f6"
+      },
+      permissions: [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET"
+      ],
+      blockedPermissions: [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    web: {
+      favicon: "./assets/logo.png"
+    },
+    plugins: [
+      [
+        "expo-image-picker",
+        {
+          photosPermission: "IEMA.ai uses the system photo picker so you can attach images to chats without granting broad photo-library access.",
+          cameraPermission: "IEMA.ai needs the camera only when you tap the camera icon to attach a photo.",
+          microphonePermission: false
+        }
+      ],
+      "expo-secure-store",
+      "expo-asset",
+      "expo-iap",
+      [
+        "expo-build-properties",
+        {
+          android: {
+            compileSdkVersion: 35,
+            targetSdkVersion: 35
+          }
+        }
+      ],
+      "expo-font",
+      "expo-web-browser"
+    ],
+    extra: {
+      apiBaseUrl: "https://api.iema.ai",
+      revenueCatIosKey: process.env.REVENUECAT_IOS_API_KEY,
+      revenueCatAndroidKey: process.env.REVENUECAT_ANDROID_API_KEY,
+      eas: {
+        projectId: "d6e0dba8-f63e-40a4-8cba-baa765a2f423"
+      }
+    },
+    owner: "siddharth1426"
+  }
+};
