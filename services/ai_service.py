@@ -21,10 +21,10 @@ FALLBACK_MODEL = os.environ.get("FALLBACK_AI_MODEL", "gpt-5-mini")
 MODEL_CATALOG = [
     {"id": "iema",                       "provider": None,        "name": "IEMA Knowledge Engine", "label": "Recommended", "description": "Smart auto-routing (recommended)"},
     {"id": "claude-haiku-4-5-20251001",  "provider": "anthropic", "name": "Claude Haiku 4.5",      "label": "Fast",     "description": "Quick everyday answers", "default": True},
-    {"id": "claude-sonnet-4-5-20250929", "provider": "anthropic", "name": "Claude Sonnet 4.5",     "label": "Balanced", "description": "Deeper reasoning, still snappy"},
-    {"id": "claude-sonnet-5",            "provider": "anthropic", "name": "Claude Sonnet 5",       "label": "Smart",    "description": "Near-flagship quality, Sonnet speed", "max_tokens": 32000},
-    {"id": "claude-opus-5",              "provider": "anthropic", "name": "Claude Opus 5",         "label": "Flagship", "description": "Deepest reasoning & long context", "max_tokens": 32000},
-    {"id": "gpt-5",                      "provider": "openai",    "name": "GPT-5",                 "label": "Powerful", "description": "Hardest tasks & long context"},
+    {"id": "claude-sonnet-4-5-20250929", "provider": "anthropic", "name": "Claude Sonnet 4.5",     "label": "Balanced", "description": "Deeper reasoning, still snappy", "premium": True},
+    {"id": "claude-sonnet-5",            "provider": "anthropic", "name": "Claude Sonnet 5",       "label": "Smart",    "description": "Near-flagship quality, Sonnet speed", "max_tokens": 32000, "premium": True},
+    {"id": "claude-opus-5",              "provider": "anthropic", "name": "Claude Opus 5",         "label": "Flagship", "description": "Deepest reasoning & long context", "max_tokens": 32000, "premium": True},
+    {"id": "gpt-5",                      "provider": "openai",    "name": "GPT-5",                 "label": "Powerful", "description": "Hardest tasks & long context", "premium": True},
     {"id": "gpt-5-mini",                 "provider": "openai",    "name": "GPT-5 mini",            "label": "Quick",    "description": "Lightweight versatile model"},
     {"id": "gpt-5-nano",                 "provider": "openai",    "name": "GPT-5 nano",            "label": "Cheapest", "description": "Simple tasks at the lowest cost", "max_tokens": 16000},
     {"id": "gpt-4.1-mini",               "provider": "openai",    "name": "GPT-4.1 mini",          "label": "Snappy",   "description": "Fast replies, no reasoning delay"},
@@ -46,6 +46,53 @@ def max_tokens_for(model: str) -> Optional[int]:
     """Per-model output budget, or None to use the client default."""
     sel = _MODEL_BY_ID.get(model)
     return sel.get("max_tokens") if sel else None
+
+
+# ---- premium (paid-plan-only) models -------------------------------------
+# The high-cost models burn several times the tokens of Haiku/mini for the same
+# flat credit price, so they are reserved for paid plans and admins.
+PREMIUM_MODEL_IDS = frozenset(m["id"] for m in MODEL_CATALOG if m.get("premium"))
+
+
+def is_premium_model(model_id: Optional[str]) -> bool:
+    return model_id in PREMIUM_MODEL_IDS
+
+
+def plan_allows_premium(plan: dict, role: Optional[str] = None) -> bool:
+    """Paid plans and admins only. Unknown/missing plan is treated as free."""
+    if role == "admin":
+        return True
+    return not bool((plan or {}).get("is_free", True))
+
+
+async def user_allows_premium(user_id: str, role: Optional[str] = None) -> bool:
+    if role == "admin":       # skip the DB read for admins
+        return True
+    from services.pricing_engine import get_user_plan
+    return plan_allows_premium(await get_user_plan(user_id), role)
+
+
+async def ensure_premium_access(user_id: str, role: Optional[str],
+                                premium: bool, name: str) -> None:
+    """Raise 403 when a free-plan user reaches for a premium chat/image/video model.
+
+    The one place the paid boundary is enforced. Pickers also grey these out, but
+    that is cosmetic — this is what actually stops the spend.
+    """
+    if not premium:
+        return
+    if await user_allows_premium(user_id, role):
+        return
+    from fastapi import HTTPException
+    raise HTTPException(403, f"{name} is available on Pro and Team plans. Upgrade to use it.")
+
+
+async def ensure_model_allowed(user_id: str, role: Optional[str], model_id: Optional[str]) -> None:
+    """Chat-catalog wrapper around ensure_premium_access()."""
+    await ensure_premium_access(
+        user_id, role, is_premium_model(model_id),
+        (_MODEL_BY_ID.get(model_id) or {}).get("name", model_id),
+    )
 
 SYSTEM_PROMPT = (
     "You are IEMA.ai, a premium AI assistant. Be concise, helpful, and precise. "

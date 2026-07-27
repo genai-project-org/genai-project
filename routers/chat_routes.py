@@ -13,7 +13,10 @@ from models import (
 )
 from services.credit_service import has_credits, deduct_credits
 from services.pricing_engine import spend, resolve_cost
-from services.ai_service import stream_ai_response, MODEL_CATALOG
+from services.ai_service import (
+    stream_ai_response, MODEL_CATALOG, ensure_model_allowed, is_premium_model,
+    user_allows_premium,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -22,8 +25,15 @@ CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
 
 
 @router.get("/models")
-async def list_models():
-    return {"items": [{"id": m["id"], "name": m["name"], "label": m["label"], "description": m["description"], "default": m.get("default", False)} for m in MODEL_CATALOG]}
+async def list_models(user: User = Depends(get_current_user)):
+    # `locked` is per-caller so the picker can grey out what this plan cannot use.
+    may_use_premium = await user_allows_premium(user.id, user.role)
+    return {"items": [{
+        "id": m["id"], "name": m["name"], "label": m["label"],
+        "description": m["description"], "default": m.get("default", False),
+        "premium": bool(m.get("premium")),
+        "locked": bool(m.get("premium")) and not may_use_premium,
+    } for m in MODEL_CATALOG]}
 
 
 @router.get("/conversations")
@@ -96,6 +106,8 @@ async def delete_conversation(conv_id: str, user: User = Depends(get_current_use
 @router.post("/stream")
 async def stream_message(req: SendMessageRequest, user: User = Depends(get_current_user)):
     """SSE streaming endpoint for chat messages."""
+    # Gate before anything is charged or streamed — a 403 mid-SSE is unreadable.
+    await ensure_model_allowed(user.id, user.role, req.model)
     # Resolve cost dynamically via pricing engine
     msg_price = await resolve_cost("chat_message")
     img_price = await resolve_cost("chat_message_image")
@@ -213,6 +225,7 @@ async def send_message(
     req: SendMessageRequest,
     user: User = Depends(get_current_user),
 ):
+    await ensure_model_allowed(user.id, user.role, req.model)
     msg_price = await resolve_cost("chat_message")
     img_price = await resolve_cost("chat_message_image")
 

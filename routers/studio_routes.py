@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from auth import get_current_user
 from models import User
-from services.studio_service import summarize_text, generate_image_bytes, IMAGE_MODEL_CATALOG
+from services.studio_service import (
+    summarize_text, generate_image_bytes, IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG,
+    image_model_meta, video_model_meta,
+)
+from services.ai_service import ensure_model_allowed, ensure_premium_access, user_allows_premium
 from services.pricing_engine import spend
 from services.storage_service import upload_bytes, get_signed_url, is_configured
 from services.data_lake import log_event
@@ -66,6 +70,7 @@ async def studio_summarize(req: SummarizeRequest, user: User = Depends(get_curre
                 raise HTTPException(400, f"Could not fetch URL: {str(fe)[:200]}")
         if len(text) < 20:
             raise HTTPException(400, "Provide at least 20 characters of text or a fetchable URL")
+        await ensure_model_allowed(user.id, user.role, req.model)
         session_id = f"studio-sum-{user.id}-{uuid.uuid4().hex[:8]}"
         result = await summarize_text(session_id, text, req.style, user_id=user.id, model_override=req.model)
         summary = result["response"]
@@ -130,10 +135,23 @@ async def studio_history(kind: Optional[str] = None, limit: int = 30,
     return {"items": items}
 
 
+def _public_models(catalog: list, may_use_premium: bool) -> list:
+    return [{"id": m["id"], "name": m["name"], "description": m["description"],
+             "default": m.get("default", False),
+             "premium": bool(m.get("premium")),
+             "locked": bool(m.get("premium")) and not may_use_premium} for m in catalog]
+
+
 @router.get("/image-models")
-async def studio_image_models():
-    return {"items": [{"id": m["id"], "name": m["name"], "description": m["description"],
-                       "default": m.get("default", False)} for m in IMAGE_MODEL_CATALOG]}
+async def studio_image_models(user: User = Depends(get_current_user)):
+    return {"items": _public_models(IMAGE_MODEL_CATALOG,
+                                    await user_allows_premium(user.id, user.role))}
+
+
+@router.get("/video-models")
+async def studio_video_models(user: User = Depends(get_current_user)):
+    return {"items": _public_models(VIDEO_MODEL_CATALOG,
+                                    await user_allows_premium(user.id, user.role))}
 
 
 @router.post("/image")
@@ -141,6 +159,8 @@ async def studio_image(req: ImageGenRequest, user: User = Depends(get_current_us
     service_key = f"studio_image_{req.quality}"
     if not is_configured():
         raise HTTPException(500, "Storage not configured")
+    img = image_model_meta(req.model)
+    await ensure_premium_access(user.id, user.role, bool(img.get("premium")), img["name"])
     try:
         images = await generate_image_bytes(req.prompt, quality=req.quality, n=req.n,
                                            model=req.model)
@@ -200,8 +220,9 @@ async def studio_video(req: VideoGenRequest, user: User = Depends(get_current_us
     resolved_model = req.model
     if resolved_model in ("sora-2",):     resolved_model = "veo-fast"
     if resolved_model in ("sora-2-pro",): resolved_model = "veo-hq"
-    tier = "pro" if resolved_model == "veo-hq" else "std"
-    service_key = f"studio_video_{tier}_{req.duration}s"
+    vid = video_model_meta(resolved_model)
+    service_key = f"studio_video_{vid['tier']}_{req.duration}s"
+    await ensure_premium_access(user.id, user.role, bool(vid.get("premium")), vid["name"])
     try:
         video = await generate_video(req.prompt, model=resolved_model,
                                      aspect_ratio=req.aspect_ratio,
