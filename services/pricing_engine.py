@@ -37,6 +37,13 @@ DEFAULT_PRICING = [
     {"_id": "studio_video_pro_4s",    "credit_cost": 180, "provider": "openai",   "category": "studio",     "description": "Sora 2 Pro video (4s)"},
     {"_id": "studio_video_pro_8s",    "credit_cost": 360, "provider": "openai",   "category": "studio",     "description": "Sora 2 Pro video (8s)"},
     {"_id": "studio_video_pro_12s",   "credit_cost": 540, "provider": "openai",   "category": "studio",     "description": "Sora 2 Pro video (12s)"},
+    # Veo allows 4/6/8s, but only 4/8/12 were ever seeded — a 6s clip resolved to
+    # cost 0 and generated for free. Plus the new veo-lite tier.
+    {"_id": "studio_video_std_6s",    "credit_cost": 90,  "provider": "google",   "category": "studio",     "description": "Veo Fast video (6s)"},
+    {"_id": "studio_video_pro_6s",    "credit_cost": 270, "provider": "google",   "category": "studio",     "description": "Veo HQ video (6s)"},
+    {"_id": "studio_video_lite_4s",   "credit_cost": 30,  "provider": "google",   "category": "studio",     "description": "Veo Lite video (4s)"},
+    {"_id": "studio_video_lite_6s",   "credit_cost": 45,  "provider": "google",   "category": "studio",     "description": "Veo Lite video (6s)"},
+    {"_id": "studio_video_lite_8s",   "credit_cost": 60,  "provider": "google",   "category": "studio",     "description": "Veo Lite video (8s)"},
     {"_id": "career_job_search",      "credit_cost": 0,  "provider": "adzuna",    "category": "career",     "description": "Job search (Adzuna)"},
     {"_id": "career_learning_path",   "credit_cost": 5,  "provider": "anthropic", "category": "career",     "description": "Career learning roadmap"},
     {"_id": "counseling_career",      "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Career counseling"},
@@ -44,6 +51,8 @@ DEFAULT_PRICING = [
     {"_id": "counseling_academic",    "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Academic counseling"},
     {"_id": "builder_create",         "credit_cost": 5,  "provider": "anthropic", "category": "builder",    "description": "Code Builder project generation"},
     {"_id": "builder_refine",         "credit_cost": 3,  "provider": "anthropic", "category": "builder",    "description": "Code Builder refine"},
+    {"_id": "builder_dyn_create",     "credit_cost": 12, "provider": "anthropic", "category": "builder",    "description": "Dynamic Builder project generation"},
+    {"_id": "builder_dyn_refine",     "credit_cost": 7,  "provider": "anthropic", "category": "builder",    "description": "Dynamic Builder refine"},
 ]
 
 # Default plans. Free is ONE-TIME (no monthly refill). USD pricing.

@@ -57,12 +57,44 @@ async def summarize_text(session_id: str, text: str, style: str = "default", use
     return {"response": summary, "source": "llm", "provider": provider}
 
 
-async def generate_image_bytes(prompt: str, quality: str = "low", n: int = 1) -> List[bytes]:
-    """Generate images via GPT-Image-1 through Emergent proxy."""
-    gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+# User-facing image-model picker. "quality" applies to OpenAI models only.
+# premium=True -> paid plans and admins only (see ai_service.ensure_premium_access).
+IMAGE_MODEL_CATALOG = [
+    {"id": "gpt-image-1",           "provider": "openai", "name": "GPT Image 1",      "description": "Balanced quality and speed", "default": True},
+    {"id": "gpt-image-1-mini",      "provider": "openai", "name": "GPT Image 1 mini", "description": "Cheapest, quick drafts"},
+    {"id": "gpt-image-2",           "provider": "openai", "name": "GPT Image 2",      "description": "Newest, best detail", "premium": True},
+    {"id": "gemini-2.5-flash-image", "provider": "google", "name": "Gemini Flash Image", "description": "Google's fast image model"},
+]
+_IMAGE_MODEL_BY_ID = {m["id"]: m for m in IMAGE_MODEL_CATALOG}
+DEFAULT_IMAGE_MODEL = next(m["id"] for m in IMAGE_MODEL_CATALOG if m.get("default"))
+
+# Veo tiers. `tier` drives the pricing key (studio_video_{tier}_{duration}s) so
+# adding a model here is all that is needed — no branching in the route.
+VIDEO_MODEL_CATALOG = [
+    {"id": "veo-lite", "tier": "lite", "name": "Veo Lite", "description": "Cheapest, quick drafts"},
+    {"id": "veo-fast", "tier": "std",  "name": "Veo Fast", "description": "Faster, lower cost", "default": True},
+    {"id": "veo-hq",   "tier": "pro",  "name": "Veo HQ",   "description": "Highest quality", "premium": True},
+]
+_VIDEO_MODEL_BY_ID = {m["id"]: m for m in VIDEO_MODEL_CATALOG}
+
+
+def image_model_meta(model_id: Optional[str]) -> dict:
+    """Catalog entry for an image model id, falling back to the default."""
+    return _IMAGE_MODEL_BY_ID.get(model_id or "") or _IMAGE_MODEL_BY_ID[DEFAULT_IMAGE_MODEL]
+
+
+def video_model_meta(model_id: Optional[str]) -> dict:
+    return _VIDEO_MODEL_BY_ID.get(model_id or "") or _VIDEO_MODEL_BY_ID["veo-fast"]
+
+
+async def generate_image_bytes(prompt: str, quality: str = "low", n: int = 1,
+                               model: Optional[str] = None) -> List[bytes]:
+    """Generate images with a catalog model; unknown ids fall back to the default."""
+    sel = image_model_meta(model)
+    gen = OpenAIImageGeneration(provider=sel["provider"])
     return await gen.generate_images(
         prompt=prompt,
-        model="gpt-image-1",
+        model=sel["id"],
         number_of_images=n,
         quality=quality,
     )
@@ -90,6 +122,7 @@ _ALLOWED_ASPECTS = {"16:9", "9:16", "1:1"}
 _ALLOWED_DURATIONS = {4, 6, 8}
 _MODEL_MAP = {
     # Public-facing names → Google model IDs (July 2026)
+    "veo-lite": "veo-3.1-lite-generate-preview",
     "veo-fast": "veo-3.1-fast-generate-preview",
     "veo-hq":   "veo-3.1-generate-preview",
     # Backwards-compat: earlier UI still sends 'sora-2' / 'sora-2-pro' — route them.

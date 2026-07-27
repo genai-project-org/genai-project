@@ -4,8 +4,8 @@ import uuid
 import base64
 import hashlib
 import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Literal, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from bson import ObjectId
 import httpx
@@ -29,6 +29,23 @@ router = APIRouter(prefix="/builder", tags=["builder"])
 CREDIT_BUILDER_CREATE = float(os.environ.get("CREDIT_BUILDER_CREATE", "15"))
 CREDIT_BUILDER_REFINE = float(os.environ.get("CREDIT_BUILDER_REFINE", "8"))
 
+# Pricing keys per builder kind — resolved through pricing_col so admins can edit them.
+_PRICE_KEY = {
+    "static": {"create": "builder_create", "refine": "builder_refine"},
+    "react": {"create": "builder_dyn_create", "refine": "builder_dyn_refine"},
+}
+
+
+def _price_key(kind: str, action: str) -> str:
+    return _PRICE_KEY.get(kind, _PRICE_KEY["static"])[action]
+
+
+def _kind_filter(kind: str) -> dict:
+    """Projects created before `kind` existed are static, so match missing too."""
+    if kind == "static":
+        return {"$or": [{"kind": "static"}, {"kind": {"$exists": False}}]}
+    return {"kind": kind}
+
 
 # ---- PAT encryption -----------------------------------------------------
 def _fernet() -> Fernet:
@@ -48,10 +65,17 @@ def _decrypt(cipher: str) -> str:
 # ---- request models -----------------------------------------------------
 class CreateProjectRequest(BaseModel):
     prompt: str = Field(min_length=8, max_length=2000)
+    kind: Literal["static", "react"] = "static"
 
 
 class RefineRequest(BaseModel):
     instruction: str = Field(min_length=3, max_length=1000)
+
+
+class ShareRequest(BaseModel):
+    # react projects are bundled in the browser (the server has no JS toolchain),
+    # so the client hands us the composed HTML. Ignored for static projects.
+    html: Optional[str] = Field(default=None, max_length=2_000_000)
 
 
 class SaveFilesRequest(BaseModel):
@@ -136,10 +160,16 @@ async def use_template(slug: str, user: User = Depends(get_current_user)):
 
 
 @router.get("/projects")
-async def list_projects(user: User = Depends(get_current_user)):
+async def list_projects(
+    user: User = Depends(get_current_user),
+    kind: Literal["static", "react", "all"] = Query("all"),
+):
+    query = {"user_id": user.id}
+    if kind != "all":
+        query.update(_kind_filter(kind))
     cursor = (
         builder_projects_col.find(
-            {"user_id": user.id},
+            query,
             {"files": 0},  # Don't fetch the large files array
         )
         .sort("updated_at", -1)
@@ -155,17 +185,20 @@ async def list_projects(user: User = Depends(get_current_user)):
 async def create_project(req: CreateProjectRequest, user: User = Depends(get_current_user)):
     # gate=... enforces the usage window right before the LLM call (cache misses only),
     # so an over-window user gets 429 without burning an LLM call or orphaning a project.
+    create_key = _price_key(req.kind, "create")
     result = await generate_project(
         user.id, req.prompt,
-        gate=lambda: precheck(user.id, "builder_create"),
+        gate=lambda: precheck(user.id, create_key),
+        kind=req.kind,
     )
     was_cached = result.get("cached", False)
-    billing = await spend(user.id, "builder_create", skip_charge=was_cached, description=f"Builder: {result['name']}")
+    billing = await spend(user.id, create_key, skip_charge=was_cached, description=f"Builder: {result['name']}")
     doc = {
         "user_id": user.id,
         "name": result["name"],
         "description": result["description"],
         "prompt": req.prompt[:2000],
+        "kind": req.kind,
         "files": result["files"],
         "file_count": len(result["files"]),
         "share_key": None,
@@ -176,7 +209,7 @@ async def create_project(req: CreateProjectRequest, user: User = Depends(get_cur
     ins = await builder_projects_col.insert_one(doc)
     doc["_id"] = ins.inserted_id
     await log_event("builder_create", user_id=user.id,
-                    payload={"prompt": req.prompt[:400], "cached": was_cached,
+                    payload={"prompt": req.prompt[:400], "cached": was_cached, "kind": req.kind,
                              "name": result["name"], "files": len(result["files"])})
     return {"project": _to_public_project(doc), "cached": was_cached,
             "credits_used": billing["credits_used"], "balance": billing["balance"]}
@@ -210,9 +243,12 @@ async def save_files(project_id: str, req: SaveFilesRequest, user: User = Depend
 @router.post("/projects/{project_id}/refine")
 async def refine(project_id: str, req: RefineRequest, user: User = Depends(get_current_user)):
     doc = await _load_project(user.id, project_id)
-    await precheck(user.id, "builder_refine")  # gate before the LLM call
-    new_files = await refine_project(doc.get("files", []), req.instruction, session_id=f"builder-refine-{project_id}")
-    billing = await spend(user.id, "builder_refine", description="Builder refine")
+    kind = doc.get("kind", "static")
+    refine_key = _price_key(kind, "refine")
+    await precheck(user.id, refine_key)  # gate before the LLM call
+    new_files = await refine_project(doc.get("files", []), req.instruction,
+                                    session_id=f"builder-refine-{project_id}", kind=kind)
+    billing = await spend(user.id, refine_key, description="Builder refine")
     await builder_projects_col.update_one(
         {"_id": ObjectId(project_id)},
         {"$set": {"files": new_files, "file_count": len(new_files), "updated_at": now_iso()}},
@@ -233,19 +269,29 @@ async def delete_project(project_id: str, user: User = Depends(get_current_user)
 
 @router.get("/projects/{project_id}/preview")
 async def preview(project_id: str, user: User = Depends(get_current_user)):
-    """Return composed single-file HTML for iframe preview."""
+    """Return composed single-file HTML for iframe preview (static projects only)."""
     doc = await _load_project(user.id, project_id)
+    kind = doc.get("kind", "static")
+    if kind != "static":
+        # react projects are bundled in the browser; there is nothing to compose here.
+        return {"html": "", "kind": kind}
     html = compose_preview_html(doc.get("files", []))
-    return {"html": html}
+    return {"html": html, "kind": kind}
 
 
 @router.post("/projects/{project_id}/share")
-async def share_project(project_id: str, user: User = Depends(get_current_user)):
+async def share_project(project_id: str, req: ShareRequest = ShareRequest(),
+                        user: User = Depends(get_current_user)):
     """Publish preview HTML to S3 and return a shareable signed URL (7-day)."""
     if not is_configured():
         raise HTTPException(500, "Storage not configured")
     doc = await _load_project(user.id, project_id)
-    html = compose_preview_html(doc.get("files", []))
+    if doc.get("kind", "static") == "static":
+        html = compose_preview_html(doc.get("files", []))
+    else:
+        if not req.html:
+            raise HTTPException(400, "Dynamic projects must send the bundled `html` to share.")
+        html = req.html
     key = doc.get("share_key")
     if not key:
         key = await upload_bytes(html.encode("utf-8"), f"builder-{uuid.uuid4().hex}.html", "text/html", folder=f"builder/{user.id}")
