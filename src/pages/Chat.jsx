@@ -137,7 +137,9 @@ export default function Chat() {
   useEffect(() => {
     api.get('/chat/models').then(({ data }) => {
       setModels(data.items);
-      setModel(data.items.find((m) => m.default)?.id ?? data.items[0]?.id);
+      // never land on a locked option — it renders selected but is unusable
+      const usable = data.items.filter((m) => !m.locked);
+      setModel(usable.find((m) => m.default)?.id ?? usable[0]?.id);
     }).catch(() => { });
   }, []);
 
@@ -451,8 +453,8 @@ export default function Chat() {
                   className="text-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-foreground focus:outline-none focus:border-primary/50 cursor-pointer"
                 >
                   {models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} — {m.label}
+                    <option key={m.id} value={m.id} disabled={m.locked}>
+                      {m.name} — {m.locked ? 'Pro & Team only' : m.label}
                     </option>
                   ))}
                 </select>

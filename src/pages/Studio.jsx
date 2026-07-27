@@ -72,7 +72,10 @@ function Summarize() {
   useEffect(() => {
     api.get('/chat/models').then(({ data }) => {
       setModels(data.items);
-      setModel((m) => m ?? (data.items.find((x) => x.default)?.id ?? data.items[0]?.id));
+      // a persisted choice may since have become locked (plan downgrade)
+      const usable = data.items.filter((x) => !x.locked);
+      setModel((m) => (usable.some((x) => x.id === m) ? m
+        : (usable.find((x) => x.default)?.id ?? usable[0]?.id)));
     }).catch(() => { });
   }, []);
 
@@ -115,7 +118,9 @@ function Summarize() {
               className="text-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-foreground focus:outline-none focus:border-primary/50 cursor-pointer"
             >
               {models.map((m) => (
-                <option key={m.id} value={m.id}>{m.name} — {m.label}</option>
+                <option key={m.id} value={m.id} disabled={m.locked}>
+                  {m.name} — {m.locked ? 'Pro & Team only' : m.label}
+                </option>
               ))}
             </select>
           </div>
@@ -168,7 +173,9 @@ function ImageGen() {
   useEffect(() => {
     api.get('/studio/image-models').then(({ data }) => {
       setImgModels(data.items);
-      setImgModel((m) => m ?? (data.items.find((x) => x.default)?.id ?? data.items[0]?.id));
+      const usable = data.items.filter((x) => !x.locked);
+      setImgModel((m) => (usable.some((x) => x.id === m) ? m
+        : (usable.find((x) => x.default)?.id ?? usable[0]?.id)));
     }).catch(() => { });
   }, []);
 
@@ -192,7 +199,8 @@ function ImageGen() {
         <Input data-testid="studio-image-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)}
                placeholder="A calm sunset over a mountain lake..." className="h-11" />
         <ChipRow label="Model" options={imgModels.map((m) => m.id)} value={imgModel} onChange={setImgModel}
-                 renderLabel={(v) => imgModels.find((m) => m.id === v)?.name ?? v} />
+                 renderLabel={(v) => imgModels.find((m) => m.id === v)?.name ?? v}
+                 isLocked={(v) => !!imgModels.find((m) => m.id === v)?.locked} />
         <ChipRow label="Style" options={['realistic', 'cinematic', 'anime', 'watercolor', 'pixel-art', '3D render']} value={artStyle} onChange={setArtStyle} />
         <ChipRow label="Aspect" options={['square', 'portrait', 'landscape']} value={aspect} onChange={setAspect} />
         <ChipRow label="Quality" options={['low', 'medium', 'high']} value={quality} onChange={setQuality} />
@@ -233,10 +241,20 @@ function VideoGen() {
   const [videoStyle, setVideoStyle] = useState(state.videoStyle || 'cinematic');
   const [motion, setMotion] = useState(state.motion || 'medium');
   const [model, setModel] = useState(state.model || 'veo-fast');
+  const [vidModels, setVidModels] = useState([]);
   const [aspect, setAspect] = useState(state.aspect || '16:9');
   const [duration, setDuration] = useState(state.duration || 4);
   const busy = state.status === 'running';
   const otherBusy = studioStore.anyRunning() && !busy;
+
+  useEffect(() => {
+    api.get('/studio/video-models').then(({ data }) => {
+      setVidModels(data.items);
+      const usable = data.items.filter((x) => !x.locked);
+      setModel((m) => (usable.some((x) => x.id === m) ? m
+        : (usable.find((x) => x.default)?.id ?? usable[0]?.id)));
+    }).catch(() => { });
+  }, []);
 
   const run = async () => {
     if (studioStore.anyRunning()) return;
@@ -261,7 +279,9 @@ function VideoGen() {
                placeholder="A drone shot of a rainforest at dawn..." className="h-11" />
         <ChipRow label="Style" options={['cinematic', 'documentary', 'animation', 'noir', 'commercial', 'dreamlike']} value={videoStyle} onChange={setVideoStyle} />
         <ChipRow label="Camera motion" options={['still', 'medium', 'dynamic']} value={motion} onChange={setMotion} />
-        <ChipRow label="Model" options={['veo-fast', 'veo-hq']} value={model} onChange={setModel} renderLabel={(v) => v === 'veo-fast' ? 'Veo Fast' : 'Veo HQ'} />
+        <ChipRow label="Model" options={vidModels.map((m) => m.id)} value={model} onChange={setModel}
+                 renderLabel={(v) => vidModels.find((m) => m.id === v)?.name ?? v}
+                 isLocked={(v) => !!vidModels.find((m) => m.id === v)?.locked} />
         <ChipRow label="Aspect" options={['16:9', '9:16', '1:1']} value={aspect} onChange={setAspect} />
         <ChipRow label="Duration" options={[4, 6, 8]} value={duration} onChange={setDuration} renderLabel={(v) => `${v}s`} />
         <div className="flex justify-end">
@@ -359,17 +379,26 @@ function StudioHistory({ onOpen }) {
   );
 }
 
-function ChipRow({ label, options, value, onChange, renderLabel }) {
+// isLocked(opt) marks paid-plan-only choices: shown, but not selectable.
+function ChipRow({ label, options, value, onChange, renderLabel, isLocked }) {
   return (
     <div>
       <div className="text-xs text-muted-foreground mb-1.5">{label}</div>
       <div className="flex flex-wrap gap-1.5">
-        {options.map((opt) => (
-          <button type="button" key={opt} onClick={() => onChange(opt)}
-            className={`px-3 py-1.5 text-xs rounded-full border capitalize transition ${value === opt ? 'border-primary text-primary bg-primary/10' : 'border-border text-muted-foreground hover:text-foreground'}`}>
-            {renderLabel ? renderLabel(opt) : String(opt)}
-          </button>
-        ))}
+        {options.map((opt) => {
+          const locked = isLocked ? isLocked(opt) : false;
+          return (
+            <button type="button" key={opt} disabled={locked}
+              title={locked ? 'Available on Pro and Team plans' : undefined}
+              onClick={() => !locked && onChange(opt)}
+              className={`px-3 py-1.5 text-xs rounded-full border capitalize transition ${
+                locked ? 'border-border text-muted-foreground/40 cursor-not-allowed'
+                  : value === opt ? 'border-primary text-primary bg-primary/10'
+                  : 'border-border text-muted-foreground hover:text-foreground'}`}>
+              {renderLabel ? renderLabel(opt) : String(opt)}{locked && ' 🔒'}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
