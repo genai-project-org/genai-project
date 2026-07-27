@@ -45,7 +45,7 @@ export default function ResetPassword() {
           <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center">
             <Sparkles className="h-4 w-4 text-primary-foreground" />
           </div>
-          <span className="font-display font-semibold">supercreator<span className="text-primary">.</span>ai</span>
+          <span className="font-display font-semibold">supercreater<span className="text-primary">.</span>ai</span>
         </Link>
         {done ? (
           <div className="text-center">

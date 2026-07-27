@@ -466,7 +466,7 @@ export default function Chat() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
                 }}
-                placeholder="Message supercreator.ai..."
+                placeholder="Message supercreater.ai..."
                 rows={1}
                 className="min-h-[52px] max-h-[200px] resize-none border-0 focus-visible:ring-0 pr-24 pl-12 py-3.5"
               />

@@ -14,7 +14,7 @@ import { logout, setAuth } from '@/store/slices/authSlice';
 import { cn } from '@/lib/utils';
 
 const AI_PROVIDERS = [
-  { key: 'iema',   label: 'supercreator (recommended)', Icon: Sparkles, desc: 'Data lake first, then randomly picks Claude or OpenAI. Best value.' },
+  { key: 'iema',   label: 'supercreater (recommended)', Icon: Sparkles, desc: 'Data lake first, then randomly picks Claude or OpenAI. Best value.' },
   { key: 'claude', label: 'Claude',              Icon: Cpu,      desc: 'Always use Anthropic Claude Haiku 4.5.' },
   { key: 'openai', label: 'OpenAI',              Icon: Zap,      desc: 'Always use OpenAI GPT-4o mini.' },
 ];

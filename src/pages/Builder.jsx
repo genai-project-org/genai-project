@@ -13,11 +13,29 @@ import {
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
-export default function Builder() {
+// Static Builder ships one self-contained index.html; Dynamic Builder ships a
+// multi-file React tree bundled in the browser. Everything else is identical, so
+// one component serves both routes.
+const COPY = {
+  static: {
+    title: 'Static Builder',
+    blurb: 'Describe an app. supercreater drops a working single-page project you can preview, edit, share, or push to GitHub.',
+    placeholder: 'e.g. Build a landing page for a plant-based food startup with hero, features, testimonials, and email signup form',
+  },
+  react: {
+    title: 'Dynamic Builder',
+    blurb: 'Describe an app. supercreater generates a real multi-file React project — components, hooks, and all — bundled live in your browser.',
+    placeholder: 'e.g. Build a kanban board with three columns, add/edit cards, and move them between columns',
+  },
+};
+
+export default function Builder({ kind = 'static' }) {
+  const copy = COPY[kind] || COPY.static;
   const [projects, setProjects] = useState([]);
   const [active, setActive] = useState(null);
   const [activeFileIdx, setActiveFileIdx] = useState(0);
   const [previewHtml, setPreviewHtml] = useState('');
+  const [bundleOk, setBundleOk] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refining, setRefining] = useState(false);
   const [refineText, setRefineText] = useState('');
@@ -30,20 +48,36 @@ export default function Builder() {
   const previewRef = useRef(null);
 
   const load = async () => {
-    const { data } = await api.get('/builder/projects');
+    const { data } = await api.get('/builder/projects', { params: { kind } });
     setProjects(data.items || []);
   };
   const loadGh = async () => {
     try { const { data } = await api.get('/builder/github/status'); setGhConnected(data.connected); } catch {}
   };
-  useEffect(() => { load(); loadGh(); }, []);
+  // Switching between /builder and /builder/dynamic remounts with a new kind.
+  useEffect(() => {
+    setActive(null); setPreviewHtml(''); setShareUrl('');
+    load(); loadGh();
+  }, [kind]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Single place the two preview strategies diverge. */
+  const refreshPreview = async (project) => {
+    if (!project) return;
+    if (kind === 'react') {
+      // dynamic import keeps the ~10MB esbuild wasm out of the main bundle
+      const { default: bundleReact } = await import('@/lib/bundleReact');
+      const r = await bundleReact(project.files || []);
+      setPreviewHtml(r.html); setBundleOk(r.ok);
+      return;
+    }
+    const p = await api.get(`/builder/projects/${project.id}/preview`);
+    setPreviewHtml(p.data.html || ''); setBundleOk(true);
+  };
 
   const openProject = async (id) => {
     const { data } = await api.get(`/builder/projects/${id}`);
     setActive(data); setActiveFileIdx(0); setPreviewHtml(''); setShareUrl('');
-    // Fetch preview
-    const p = await api.get(`/builder/projects/${id}/preview`);
-    setPreviewHtml(p.data.html || '');
+    await refreshPreview(data);
   };
 
   const currentFile = active?.files?.[activeFileIdx];
@@ -59,8 +93,7 @@ export default function Builder() {
     setSaving(true);
     try {
       await api.patch(`/builder/projects/${active.id}/files`, { files: active.files });
-      const p = await api.get(`/builder/projects/${active.id}/preview`);
-      setPreviewHtml(p.data.html || '');
+      await refreshPreview(active);
       toast.success('Saved');
     } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
     finally { setSaving(false); }
@@ -68,8 +101,7 @@ export default function Builder() {
 
   const refresh = async () => {
     if (!active) return;
-    const p = await api.get(`/builder/projects/${active.id}/preview`);
-    setPreviewHtml(p.data.html || '');
+    await refreshPreview(active);
     toast.success('Preview refreshed');
   };
 
@@ -82,8 +114,7 @@ export default function Builder() {
       setActive(updated); setActiveFileIdx(0);
       dispatch(setWalletBalance(data.balance));
       toast.success('Refined');
-      const p = await api.get(`/builder/projects/${active.id}/preview`);
-      setPreviewHtml(p.data.html || '');
+      await refreshPreview(updated);
       setRefineText('');
     } catch (e) { toast.error(e.response?.data?.detail || 'Refine failed'); }
     finally { setRefining(false); }
@@ -91,8 +122,14 @@ export default function Builder() {
 
   const doShare = async () => {
     if (!active) return;
+    // react projects are bundled client-side, so the server needs our HTML —
+    // and a failed build must not be published as a "working" share link.
+    if (kind === 'react' && !bundleOk) {
+      return toast.error('Fix the build errors in the preview before sharing.');
+    }
     try {
-      const { data } = await api.post(`/builder/projects/${active.id}/share`);
+      const body = kind === 'react' ? { html: previewHtml } : {};
+      const { data } = await api.post(`/builder/projects/${active.id}/share`, body);
       setShareUrl(data.share_url);
       toast.success('Share URL created (7-day)');
     } catch (e) { toast.error(e.response?.data?.detail || 'Share failed'); }
@@ -144,10 +181,8 @@ export default function Builder() {
             <div className="h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-6">
               <Code2 className="h-7 w-7 text-primary" />
             </div>
-            <h2 className="font-display text-3xl font-medium">Code Builder</h2>
-            <p className="text-sm text-muted-foreground mt-2">
-              Describe an app. supercreator drops a working project you can preview, edit, share, or push to GitHub.
-            </p>
+            <h2 className="font-display text-3xl font-medium">{copy.title}</h2>
+            <p className="text-sm text-muted-foreground mt-2">{copy.blurb}</p>
             <div className="mt-6 flex flex-wrap gap-2 justify-center">
               <Button onClick={() => setShowCreate(true)} className="gap-2"><Plus className="h-4 w-4" /> New Project</Button>
             </div>
@@ -240,20 +275,21 @@ export default function Builder() {
         </div>
       )}
 
-      <CreateDialog open={showCreate} onOpenChange={setShowCreate} onCreated={async (p) => { await load(); openProject(p.id); }} dispatch={dispatch} />
+      <CreateDialog open={showCreate} onOpenChange={setShowCreate} kind={kind} copy={copy}
+                    onCreated={async (p) => { await load(); openProject(p.id); }} dispatch={dispatch} />
       <GithubDialog open={showGithub} onOpenChange={setShowGithub} project={active} connected={ghConnected} onDone={() => { loadGh(); }} />
     </div>
   );
 }
 
-function CreateDialog({ open, onOpenChange, onCreated, dispatch }) {
+function CreateDialog({ open, onOpenChange, onCreated, dispatch, kind = 'static', copy = COPY.static }) {
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const submit = async () => {
     if (prompt.trim().length < 8) return toast.error('Describe the app (at least 8 chars)');
     setLoading(true);
     try {
-      const { data } = await api.post('/builder/projects', { prompt });
+      const { data } = await api.post('/builder/projects', { prompt, kind });
       if (data.balance != null) dispatch(setWalletBalance(data.balance));
       toast.success('Ready');
       onOpenChange(false); setPrompt('');
@@ -265,13 +301,13 @@ function CreateDialog({ open, onOpenChange, onCreated, dispatch }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="builder-create-dialog">
         <DialogHeader>
-          <DialogTitle>New Project</DialogTitle>
+          <DialogTitle>New {copy.title} Project</DialogTitle>
           <DialogDescription>Describe what to build. Repeat prompts are free.</DialogDescription>
         </DialogHeader>
         <Textarea
           data-testid="builder-create-prompt"
           rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)}
-          placeholder="e.g. Build a landing page for a plant-based food startup with hero, features, testimonials, and email signup form"
+          placeholder={copy.placeholder}
         />
         <DialogFooter>
           <Button data-testid="builder-create-submit" onClick={submit} disabled={loading || prompt.trim().length < 8}>
@@ -287,7 +323,7 @@ function CreateDialog({ open, onOpenChange, onCreated, dispatch }) {
 function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
   const [pat, setPat] = useState('');
   const [repo, setRepo] = useState('');
-  const [commit, setCommit] = useState('supercreator.ai Builder push');
+  const [commit, setCommit] = useState('supercreater.ai Builder push');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 

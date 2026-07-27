@@ -171,7 +171,7 @@ export default function AuthPage({ mode }) {
           <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center">
             <Sparkles className="h-4 w-4 text-primary-foreground" />
           </div>
-          <span className="font-display font-semibold">supercreator<span className="text-primary">.</span>ai</span>
+          <span className="font-display font-semibold">supercreater<span className="text-primary">.</span>ai</span>
         </Link>
         <div className="relative max-w-md">
           <div className="text-xs uppercase tracking-wider text-primary mb-3">v2.0</div>
@@ -183,14 +183,14 @@ export default function AuthPage({ mode }) {
             <div><div className="font-display text-2xl font-medium">12</div><div className="text-xs text-muted-foreground">Modules</div></div>
           </div>
         </div>
-        <div className="relative text-xs text-muted-foreground">&copy; 2026 supercreator.ai — Own the data. Grow every day.</div>
+        <div className="relative text-xs text-muted-foreground">&copy; 2026 supercreater.ai — Own the data. Grow every day.</div>
       </div>
 
       <div className="flex-1 flex flex-col justify-center items-center p-6">
         <div className="w-full max-w-sm animate-fade-in-up">
           <Link to="/" className="lg:hidden flex items-center gap-2 mb-8">
             <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center"><Sparkles className="h-4 w-4 text-primary-foreground" /></div>
-            <span className="font-display font-semibold">supercreator<span className="text-primary">.</span>ai</span>
+            <span className="font-display font-semibold">supercreater<span className="text-primary">.</span>ai</span>
           </Link>
           <h1 className="font-display text-3xl font-medium tracking-tight">{isRegister ? 'Create your account' : 'Welcome back'}</h1>
           <p className="mt-2 text-sm text-muted-foreground">

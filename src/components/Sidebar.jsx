@@ -23,7 +23,7 @@ const SECTIONS = [
   { key: 'build', title: 'Build', items: [
     { label: 'Code Builder', Icon: Code2, children: [
       { to: '/builder', label: 'Static Builder', Icon: FileText, tid: 'nav-builder' },
-      { label: 'Dynamic Builder', Icon: Rocket, locked: true },
+      { to: '/builder/dynamic', label: 'Dynamic Builder', Icon: Rocket, tid: 'nav-builder-dynamic' },
     ] },
   ] },
   { key: 'learn', title: 'Learn', items: [
@@ -72,7 +72,10 @@ export default function Sidebar({ onMobileClose, mobile = false }) {
     isActive ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground'
   );
 
-  const renderLeaf = ({ to, label, Icon, tid, locked, indent }) => {
+  // end: exact match. Without it "/builder" also matches "/builder/dynamic", so
+  // Static Builder stays permanently active — and an already-active row shows no
+  // hover change, which reads as "hover is broken on the sub-items".
+  const renderLeaf = ({ to, label, Icon, tid, locked, indent, end = true }) => {
     const pad = indent && !collapsed && 'pl-8';
     if (locked) {
       const el = (
@@ -87,7 +90,7 @@ export default function Sidebar({ onMobileClose, mobile = false }) {
       ) : el;
     }
     const link = (
-      <NavLink key={to} to={to} className={(s) => cn(linkClass(s), pad)} data-testid={tid} onClick={onMobileClose}>
+      <NavLink key={to} to={to} end={end} className={(s) => cn(linkClass(s), pad)} data-testid={tid} onClick={onMobileClose}>
         <Icon className="h-4 w-4 flex-shrink-0" strokeWidth={1.75} />
         {!collapsed && <span className="truncate">{label}</span>}
       </NavLink>
@@ -104,8 +107,9 @@ export default function Sidebar({ onMobileClose, mobile = false }) {
     if (!item.children) return [renderLeaf(item)];
     if (collapsed) {
       // icon-only: show just the parent icon (linking to its first real route), not sub-items
+      // one icon stands in for the whole group, so it stays active on any sub-route
       const first = item.children.find((c) => c.to) || {};
-      return [renderLeaf({ to: first.to, label: item.label, Icon: item.Icon, tid: first.tid })];
+      return [renderLeaf({ to: first.to, label: item.label, Icon: item.Icon, tid: first.tid, end: false })];
     }
     const kids = item.children.map((c) => renderLeaf({ ...c, indent: true }));
     const isOpen = open[item.label] !== false;  // default expanded
@@ -169,7 +173,7 @@ export default function Sidebar({ onMobileClose, mobile = false }) {
                 <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center flex-shrink-0">
                   <Sparkles className="h-4 w-4 text-primary-foreground" strokeWidth={2} />
                 </div>
-                <span className="font-display font-semibold text-[15px] tracking-tight">supercreator<span className="text-primary">.</span>ai</span>
+                <span className="font-display font-semibold text-[15px] tracking-tight">supercreater<span className="text-primary">.</span>ai</span>
               </NavLink>
               {!mobile && (
                 <Button
@@ -203,7 +207,10 @@ export default function Sidebar({ onMobileClose, mobile = false }) {
         </div>
 
         {/* Main nav */}
-        <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
+        {/* scrollbar-gutter: the 8px scrollbar (index.css) otherwise eats only the
+            right edge, shifting these icons 4px left of the New Chat button above.
+            both-edges reserves it symmetrically so they stay centred either way. */}
+        <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5 [scrollbar-gutter:stable_both-edges]">
           {SECTIONS.map((s, i) => (
             <div key={s.key} className={cn(i > 0 && !collapsed && 'pt-4')}>
               {renderSection(s.key, s.title, s.items)}

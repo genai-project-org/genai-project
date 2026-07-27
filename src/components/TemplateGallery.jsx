@@ -39,7 +39,7 @@ export default function TemplateGallery() {
             Ship apps in 15 credits.
           </h2>
           <p className="mt-4 text-muted-foreground max-w-lg">
-            Pick a template. See it live below. Sign up and remix it into your own — or describe any app and supercreator will build it.
+            Pick a template. See it live below. Sign up and remix it into your own — or describe any app and supercreater will build it.
           </p>
         </div>
 

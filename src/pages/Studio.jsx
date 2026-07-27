@@ -160,16 +160,25 @@ function ImageGen() {
   const [artStyle, setArtStyle] = useState(state.artStyle || 'realistic');
   const [aspect, setAspect] = useState(state.aspect || 'square');
   const [quality, setQuality] = useState(state.quality || 'low');
+  const [imgModels, setImgModels] = useState([]);
+  const [imgModel, setImgModel] = useState(state.imgModel || null);
   const busy = state.status === 'running';
   const otherBusy = studioStore.anyRunning() && !busy;
+
+  useEffect(() => {
+    api.get('/studio/image-models').then(({ data }) => {
+      setImgModels(data.items);
+      setImgModel((m) => m ?? (data.items.find((x) => x.default)?.id ?? data.items[0]?.id));
+    }).catch(() => { });
+  }, []);
 
   const run = async () => {
     if (studioStore.anyRunning()) return;
     if (prompt.trim().length < 3) return;
     const fullPrompt = `${prompt.trim()}. Style: ${artStyle}. Aspect: ${aspect}. High visual fidelity, clean composition.`;
-    studioStore.begin('img', { prompt, artStyle, aspect, quality });
+    studioStore.begin('img', { prompt, artStyle, aspect, quality, imgModel });
     try {
-      const { data } = await api.post('/studio/image', { prompt: fullPrompt, quality, n: 1 });
+      const { data } = await api.post('/studio/image', { prompt: fullPrompt, quality, n: 1, model: imgModel });
       studioStore.complete('img', { images: data.images });
     } catch (e) {
       studioStore.fail('img', detailToString(e, 'Image generation failed'));
@@ -182,10 +191,8 @@ function ImageGen() {
       <div className="rounded-lg border border-border bg-card p-4 space-y-3">
         <Input data-testid="studio-image-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)}
                placeholder="A calm sunset over a mountain lake..." className="h-11" />
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Model:</span>
-          <span className="px-3 py-1 text-xs rounded-full border border-primary text-primary bg-primary/10">GPT Image 1</span>
-        </div>
+        <ChipRow label="Model" options={imgModels.map((m) => m.id)} value={imgModel} onChange={setImgModel}
+                 renderLabel={(v) => imgModels.find((m) => m.id === v)?.name ?? v} />
         <ChipRow label="Style" options={['realistic', 'cinematic', 'anime', 'watercolor', 'pixel-art', '3D render']} value={artStyle} onChange={setArtStyle} />
         <ChipRow label="Aspect" options={['square', 'portrait', 'landscape']} value={aspect} onChange={setAspect} />
         <ChipRow label="Quality" options={['low', 'medium', 'high']} value={quality} onChange={setQuality} />

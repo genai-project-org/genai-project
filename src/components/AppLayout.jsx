@@ -48,7 +48,7 @@ export default function AppLayout() {
           <Button variant="ghost" size="icon" onClick={() => setMobileOpen(true)} data-testid={NAV.mobileMenuBtn}>
             <Menu className="h-5 w-5" />
           </Button>
-          <div className="font-display font-semibold">supercreator<span className="text-primary">.</span>ai</div>
+          <div className="font-display font-semibold">supercreater<span className="text-primary">.</span>ai</div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" data-testid={NAV.themeToggle}>

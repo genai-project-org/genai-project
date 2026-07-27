@@ -119,7 +119,7 @@ export default function MobileOAuthBridge() {
         <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center">
           <Sparkles className="h-4 w-4 text-primary-foreground" />
         </div>
-        <span className="font-display font-semibold">supercreator<span className="text-primary">.</span>ai</span>
+        <span className="font-display font-semibold">supercreater<span className="text-primary">.</span>ai</span>
       </div>
       <Loader2 className="h-6 w-6 animate-spin text-primary mb-4" />
       <p className="text-sm text-muted-foreground max-w-sm">{msg}</p>
