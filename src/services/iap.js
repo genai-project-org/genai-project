@@ -83,6 +83,7 @@ export async function initIap({ onPurchase, onError } = {}) {
     _initialized = true;
     return { ok: true };
   } catch (e) {
+    console.log('[IEMA-DEBUG] initConnection threw', e?.code, e?.message, JSON.stringify(e));
     return { ok: false, reason: e?.message || String(e) };
   }
 }
@@ -92,8 +93,11 @@ export async function loadSubscriptions() {
   if (!iap) return [];
   try {
     _subscriptions = await iap.getSubscriptions({ skus: SUB_PRODUCT_IDS });
+    console.log('[IEMA-DEBUG] getSubscriptions requested', JSON.stringify(SUB_PRODUCT_IDS));
+    console.log('[IEMA-DEBUG] getSubscriptions result', JSON.stringify(_subscriptions));
     return _subscriptions;
-  } catch {
+  } catch (e) {
+    console.log('[IEMA-DEBUG] getSubscriptions threw', e?.code, e?.message, JSON.stringify(e));
     return [];
   }
 }
