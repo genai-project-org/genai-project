@@ -135,7 +135,7 @@ export default function BillingScreen({ navigation }) {
       Alert.alert('Please wait', 'Store is still connecting…');
       return;
     }
-    const known = iapProducts.some((p) => p.productId === sku);
+    const known = iapProducts.some((p) => p.id === sku || p.productId === sku);
     if (!known) {
       Alert.alert(
         'Product not found',

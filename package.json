@@ -48,8 +48,7 @@
     "react-redux": "^9.2.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.25.0",
-    "expo-doctor": "^1.20.1"
+    "@babel/core": "^7.25.0"
   },
   "private": true
 }

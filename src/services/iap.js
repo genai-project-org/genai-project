@@ -83,7 +83,6 @@ export async function initIap({ onPurchase, onError } = {}) {
     _initialized = true;
     return { ok: true };
   } catch (e) {
-    console.log('[IEMA-DEBUG] initConnection threw', e?.code, e?.message, JSON.stringify(e));
     return { ok: false, reason: e?.message || String(e) };
   }
 }
@@ -92,12 +91,9 @@ export async function loadSubscriptions() {
   const iap = loadIap();
   if (!iap) return [];
   try {
-    _subscriptions = await iap.getSubscriptions({ skus: SUB_PRODUCT_IDS });
-    console.log('[IEMA-DEBUG] getSubscriptions requested', JSON.stringify(SUB_PRODUCT_IDS));
-    console.log('[IEMA-DEBUG] getSubscriptions result', JSON.stringify(_subscriptions));
+    _subscriptions = (await iap.fetchProducts({ skus: SUB_PRODUCT_IDS, type: 'subs' })) || [];
     return _subscriptions;
-  } catch (e) {
-    console.log('[IEMA-DEBUG] getSubscriptions threw', e?.code, e?.message, JSON.stringify(e));
+  } catch {
     return [];
   }
 }
@@ -109,18 +105,19 @@ export async function purchaseSubscription(sku) {
 
   if (Platform.OS === 'android') {
     // Google Play Billing v6+ requires the base-plan offerToken.
-    const product = _subscriptions.find((p) => p.productId === sku || p.id === sku);
-    const offerToken = product?.subscriptionOfferDetails?.[0]?.offerToken;
+    const product = _subscriptions.find((p) => p.id === sku || p.productId === sku);
+    const offerToken = product?.subscriptionOfferDetailsAndroid?.[0]?.offerToken;
     return iap.requestPurchase({
       request: {
         android: {
           skus: [sku],
           ...(offerToken
-            ? { subscriptionOffers: [{ sku, offerToken }] }
+            ? { subscriptionOffers: [{ offerToken }] }
             : {}),
         },
       },
       type: 'subs',
+      willAutoRenew: true,
     });
   }
 
@@ -128,15 +125,17 @@ export async function purchaseSubscription(sku) {
   return iap.requestPurchase({
     request: { ios: { sku } },
     type: 'subs',
+    willAutoRenew: true,
   });
 }
 
 async function verifyPurchase(purchase) {
   if (Platform.OS === 'ios') {
-    // StoreKit 2 exposes a JWS receipt on `jwsRepresentation`; expo-iap also
-    // maps the classic App Store receipt to `transactionReceipt`. We send
-    // whichever is present.
-    const receipt = purchase?.jwsRepresentation || purchase?.transactionReceipt;
+    // Our backend validates against Apple's legacy verifyReceipt endpoint,
+    // which needs the base64 receipt blob, not the StoreKit 2 JWS exposed on
+    // `purchase.purchaseToken`. getReceiptDataIOS() still returns that format.
+    const iap = loadIap();
+    const receipt = await iap?.getReceiptDataIOS?.();
     if (!receipt) return { ok: false, error: 'no iOS receipt' };
     const { data } = await api.post('/payments/iap/apple/verify', { receipt });
     return data;
