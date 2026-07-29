@@ -29,6 +29,10 @@ const SECTIONS = [
   { key: 'learn', title: 'Learn', items: [
     { to: '/counseling', label: 'Counseling', Icon: Heart, tid: 'nav-counseling' },
     { to: '/career', label: 'Career Intelligence', Icon: Briefcase, tid: 'nav-career' },
+    // ponytail: both rows point at /career, so the default end:true keeps them from
+    // highlighting together. Cost: on /career/path neither lights up. Not worth threading
+    // a custom active-matcher through renderLeaf for.
+    { to: '/career/resume', label: 'Resume Intelligence', Icon: FileText, tid: 'nav-resume' },
   ] },
   { key: 'account', title: 'Account', items: [
     { to: '/usage', label: 'Usage', Icon: BarChart3, tid: NAV.linkUsage },
@@ -44,7 +48,6 @@ const comingSoon = [
   { label: 'Startup Intelligence', Icon: Rocket },
   { label: 'Research Intelligence', Icon: FlaskConical },
   { label: 'Dynamic Course Engine', Icon: GraduationCap },
-  { label: 'Resume Intelligence', Icon: FileText },
   { label: 'Mock Interviews', Icon: MessagesSquare },
   { label: 'Scholarships', Icon: Award },
   { label: 'Internships', Icon: MapPin },

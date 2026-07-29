@@ -47,6 +47,7 @@ function App() {
               <Route path="/chat" element={<Chat />} />
               <Route path="/studio" element={<Studio />} />
               <Route path="/career" element={<Career />} />
+              <Route path="/career/:tab" element={<Career />} />
               <Route path="/builder" element={<Builder kind="static" />} />
               <Route path="/builder/dynamic" element={<Builder kind="react" />} />
               <Route path="/counseling" element={<Counseling />} />

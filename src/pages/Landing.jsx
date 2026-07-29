@@ -40,6 +40,7 @@ const MODULES = [
     Icon: FileText, name: 'Resume Intelligence', slug: 'resume',
     tagline: 'Beat the ATS. Land the call.',
     body: 'Parsing, skill matching, ATS scoring and improvement tips — with every rewrite backed by real hiring data.',
+    live: true,
   },
   {
     Icon: MessagesSquare, name: 'Mock Interviews', slug: 'interviews',
