@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Integrating RevenueCat into a React Native (Expo) App</title>
+<style>
+  @page { margin: 2.2cm 1.8cm; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #1a1a1a;
+    font-size: 10.5pt;
+    line-height: 1.5;
+  }
+  h1 { font-size: 22pt; margin-top: 0; margin-bottom: 4px; }
+  h2 {
+    font-size: 15pt; margin-top: 30px; border-bottom: 2px solid #2b3a55;
+    padding-bottom: 4px; color: #16233d; page-break-after: avoid;
+  }
+  h3 { font-size: 12pt; margin-top: 20px; color: #223; page-break-after: avoid; }
+  h4 { font-size: 10.5pt; margin-top: 14px; page-break-after: avoid; color: #333; }
+  .subtitle { color: #555; font-size: 11pt; margin-bottom: 2px; }
+  .meta { color: #777; font-size: 9pt; margin-bottom: 24px; }
+  .cover { text-align: center; padding-top: 20%; page-break-after: always; }
+  .cover h1 { font-size: 28pt; }
+  .cover .tag {
+    display: inline-block; margin-top: 24px; padding: 6px 16px;
+    background: #eef2fa; color: #2b3a55; border-radius: 20px; font-size: 10pt; font-weight: 600;
+  }
+  .cover .meta { margin-top: 40px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 9.5pt; }
+  th, td { border: 1px solid #d7dce3; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #eef2fa; color: #16233d; }
+  code {
+    background: #f2f3f5; padding: 1px 5px; border-radius: 3px;
+    font-family: "SFMono-Regular", Consolas, Menlo, monospace; font-size: 9.3pt;
+  }
+  pre {
+    background: #1e1e2e; color: #d9deed; padding: 10px 12px; border-radius: 6px;
+    overflow-x: auto; font-size: 8.6pt; line-height: 1.45; page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .box { border-left: 4px solid #2b3a55; background: #f7f9fc; padding: 10px 14px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+  .box.warn { border-left-color: #b5651d; background: #fdf4ec; }
+  .box.tip { border-left-color: #1e7d4a; background: #eefaf2; }
+  .box.step { border-left-color: #2b3a55; background: #f2f5fb; }
+  ul, ol { margin-top: 4px; margin-bottom: 10px; }
+  li { margin-bottom: 3px; }
+  .badge { display: inline-block; font-size: 8.3pt; font-weight: 600; padding: 1px 8px; border-radius: 10px; color: #fff; margin-right: 4px; }
+  .badge.ios { background: #555; }
+  .badge.android { background: #3ddc84; color: #06331b; }
+  .badge.both { background: #2b3a55; }
+  .badge.rc { background: #7c3aed; }
+  .toc { background: #f7f9fc; padding: 16px 22px; border-radius: 6px; margin: 16px 0; }
+  .toc a { color: #16233d; text-decoration: none; }
+  .toc li { margin-bottom: 6px; }
+  hr { border: none; border-top: 1px solid #e0e4ea; margin: 24px 0; }
+  .small { font-size: 9pt; color: #666; }
+  .file-path { font-family: monospace; font-size: 9.3pt; color: #16233d; }
+  .steps ol > li { margin-bottom: 8px; }
+  .kbd { background: #eee; border: 1px solid #ccc; border-radius: 3px; padding: 0 5px; font-family: monospace; font-size: 9pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Integrating RevenueCat</h1>
+  <div class="subtitle">Into a React Native (Expo) App — iOS &amp; Android</div>
+  <div class="tag">RevenueCat · App Store Connect · Google Play Console · expo-iap</div>
+  <div class="meta">
+    A practical, procedure-level integration guide with real dashboard click-paths and working code.<br>
+    Covers both integration styles: RevenueCat-managed purchases (recommended for new apps) and
+    Observer Mode (for apps with an existing IAP implementation).
+  </div>
+</div>
+
+<h2>Table of Contents</h2>
+<div class="toc">
+<ol>
+  <li><a href="#overview">Overview: Two Ways to Integrate</a></li>
+  <li><a href="#prereqs">Prerequisites</a></li>
+  <li><a href="#appstore">Part A — App Store Connect Setup</a></li>
+  <li><a href="#playconsole">Part B — Google Play Console Setup</a></li>
+  <li><a href="#rcdashboard">Part C — RevenueCat Dashboard Setup</a></li>
+  <li><a href="#install">Part D — Installing the SDK in Expo</a></li>
+  <li><a href="#managed">Part E — Code: RevenueCat-Managed Purchases (Recommended)</a></li>
+  <li><a href="#observer">Part F — Code: Observer Mode (Existing IAP Implementation)</a></li>
+  <li><a href="#webhooks">Part G — Backend Webhooks</a></li>
+  <li><a href="#testing">Part H — Testing on Real Devices</a></li>
+  <li><a href="#pitfalls">Part I — Common Pitfalls</a></li>
+  <li><a href="#checklist">Appendix — Full Setup Checklist</a></li>
+</ol>
+</div>
+
+<h2 id="overview">1. Overview: Two Ways to Integrate</h2>
+<p>RevenueCat can be integrated in one of two ways, and the choice affects both the RevenueCat
+dashboard configuration and the client code. Decide this first.</p>
+
+<table>
+<tr><th></th><th><span class="badge rc">RevenueCat-Managed</span> (recommended)</th><th>Observer Mode</th></tr>
+<tr><td>Who owns checkout?</td><td>RevenueCat SDK (<code>purchasePackage</code>)</td><td>Your own IAP code (e.g. <code>expo-iap</code>)</td></tr>
+<tr><td>Best for</td><td>New apps, or apps not yet shipping IAP</td><td>Apps that already have a working native-store purchase flow and just want RevenueCat's cross-platform entitlement layer / analytics / webhooks on top, without touching the checkout path</td></tr>
+<tr><td>Entitlement checks</td><td><code>customerInfo.entitlements.active</code></td><td>Same — RevenueCat still builds entitlement state from observed transactions</td></tr>
+<tr><td>Server-side receipt verification</td><td>Handled by RevenueCat</td><td>Still done by your own backend (RevenueCat is not in that path)</td></tr>
+<tr><td>Config flag</td><td><em>(default)</em></td><td><code>purchasesAreCompletedBy: { type: 'MY_APP', storeKitVersion: 'STOREKIT2' }</code> at <code>configure()</code> time</td></tr>
+</table>
+
+<p>Everything in Parts A–D (store &amp; dashboard setup) applies to both approaches identically. Part E
+covers the managed flow; Part F covers Observer Mode.</p>
+
+<h2 id="prereqs">2. Prerequisites</h2>
+<ul>
+<li>An Expo project using <strong>EAS Build</strong> (a managed workflow, custom dev client, or bare
+workflow) — native modules like this cannot run inside Expo Go.</li>
+<li>An active Apple Developer Program membership (for iOS) and a Google Play Console developer
+account (for Android), both able to accept payments (Paid Apps Agreement / a Play Console billing
+profile).</li>
+<li>A RevenueCat account (free tier is sufficient to start): <a href="https://app.revenuecat.com">app.revenuecat.com</a>.</li>
+</ul>
+
+<h2 id="appstore">3. Part A — App Store Connect Setup</h2>
+
+<h3>A.1 Create the app &amp; complete Agreements, Tax, and Banking</h3>
+<div class="box step steps">
+<ol>
+<li>App Store Connect → <strong>Apps → +</strong> → create your app with its bundle ID.</li>
+<li>Go to <strong>Business → Agreements, Tax, and Banking</strong>. Accept the <strong>Paid Apps
+Agreement</strong> (required — subscriptions cannot resolve at all in StoreKit, even in sandbox,
+until this is Active).</li>
+<li>Add a <strong>Bank Account</strong> and complete the relevant <strong>Tax Form</strong> (e.g. a
+U.S. Form W-9 for a U.S. entity). Until the tax form is submitted (not just "in progress"), product
+lookups will fail with a generic, unhelpful error from the client SDK — there is no error message
+that will tell you this is the cause. Always check this page first if products silently fail to
+resolve.</li>
+</ol>
+</div>
+<div class="box warn">
+<strong>Gotcha:</strong> if you see <em>"The Tax ID entered already exists"</em> when submitting a tax
+form, this is an Apple-side conflict (a duplicate EIN record somewhere in Apple's systems) — it
+cannot be fixed from the UI. Escalate via <strong>developer.apple.com/contact/finance/</strong> →
+Subject: <em>Tax</em> → Category: <em>Tax information submissions</em>, stating the exact error and
+confirming no other Apple Developer account should hold this EIN.
+</div>
+
+<h3>A.2 Create the subscription group &amp; subscriptions</h3>
+<div class="box step steps">
+<ol>
+<li>Your app → <strong>Monetization → Subscriptions</strong> → create a <strong>Subscription
+Group</strong> (e.g. <code>APP_PLANS</code>) — all your tiers/durations live inside one group so users
+can only be subscribed to one at a time within it.</li>
+<li>Inside the group, <strong>Create a subscription</strong> for each plan (e.g.
+<code>com.yourapp.pro.monthly</code>). Set reference name, duration, and localized display info.</li>
+<li>For each subscription, set a price in <strong>Subscription Pricing</strong> — you can set one
+price and let Apple auto-generate equivalents in other territories/currencies, or customize per
+territory.</li>
+<li>Submit metadata for review. Subscriptions can be tested in the <strong>Sandbox</strong> in any
+state except <em>Rejected</em> — you do not need to wait for "Approved" to test.</li>
+</ol>
+</div>
+
+<h3>A.3 Create a Sandbox Tester</h3>
+<div class="box step steps">
+<ol>
+<li><strong>Users and Access → Sandbox → Testers → +</strong>. Use an email not tied to any real Apple
+ID.</li>
+<li>On the test device: <strong>Settings → App Store → Sandbox Account</strong> (iOS 17+) — sign in
+there, <em>not</em> by signing out of your real Apple ID. Purchases made with this signed-in sandbox
+account inside your app will hit Apple's sandbox environment automatically.</li>
+</ol>
+</div>
+
+<h3>A.4 (RevenueCat-managed only) Generate an In-App Purchase Key</h3>
+<p>RevenueCat needs this to validate iOS transactions server-side (independent of whether you're
+using StoreKit 1 or 2).</p>
+<div class="box step steps">
+<ol>
+<li><strong>Users and Access → Integrations → In-App Purchase</strong> → generate a key.</li>
+<li>Download the <code>.p8</code> key file immediately — it cannot be re-downloaded later. Note the
+<strong>Key ID</strong> and your <strong>Issuer ID</strong>.</li>
+<li>Upload the key file + Key ID + Issuer ID into RevenueCat under your iOS app's settings (Part C).</li>
+</ol>
+</div>
+
+<h2 id="playconsole">4. Part B — Google Play Console Setup</h2>
+
+<h3>B.1 Create the app &amp; get a build into a testing track</h3>
+<div class="box step steps">
+<ol>
+<li>Play Console → <strong>Create app</strong>.</li>
+<li>You must upload at least one build to <strong>any</strong> track (Internal testing is fastest)
+before subscription products can be created — Play Console ties product creation to having a real
+app package on file.</li>
+</ol>
+</div>
+
+<h3>B.2 Create subscriptions &amp; base plans</h3>
+<div class="box step steps">
+<ol>
+<li><strong>Monetize with Play → Products → Subscriptions → Create subscription</strong>. Set the
+product ID (e.g. <code>pro_monthly</code>) — this cannot be changed later.</li>
+<li>Inside the subscription, <strong>Add a base plan</strong> — set billing period (monthly/yearly)
+and whether it auto-renews.</li>
+<li>Click <strong>Set prices</strong> or <strong>Manage country/region availability</strong> for the
+base plan.</li>
+</ol>
+</div>
+<div class="box warn">
+<strong>Gotcha — the most common silent-failure cause on Android:</strong> a freshly-created base
+plan defaults to whatever region you happened to have selected when you clicked "Set prices" — often
+just your own country. If a base plan is only priced in, say, India, then <em>any</em> Play Store
+account whose billing country is not India will get an empty product list back from
+<code>fetchProducts()</code> — no error, just nothing. Always explicitly check
+<strong>Manage country/region availability</strong> and add every country you intend to sell in (or
+all 174+ available regions, using one reference-currency price that Play auto-converts per region).
+</div>
+<div class="box warn">
+<strong>Gotcha — regional price caps:</strong> some currencies have a hard price ceiling for
+auto-renewing subscriptions (e.g. Google enforces roughly ₩70–₩600,000 for KRW). If you bulk-set a
+price in USD and let Play auto-convert, a high-priced annual plan can overflow a smaller currency's
+cap and that single region will show a validation error blocking the whole save — find it via the
+region row showing a red error icon and adjust that one region's price down manually.
+</div>
+
+<h3>B.3 Service account &amp; API access (needed for both server-side receipt validation and RevenueCat)</h3>
+<div class="box step steps">
+<ol>
+<li>In <strong>Google Cloud Console</strong>, create (or reuse) a Service Account in the project linked
+to your Play Console developer account, and generate a JSON key for it.</li>
+<li>In Play Console → <strong>Users and permissions → Invite new users</strong> (or manage an existing
+service account entry), grant it at minimum: <em>View financial data</em> and <em>Manage orders and
+subscriptions</em> permissions, scoped to your app.</li>
+<li>Upload this same JSON key into RevenueCat under your Android app's settings (Part C) — RevenueCat
+uses it to validate purchases and receive real-time notifications.</li>
+</ol>
+</div>
+
+<h3>B.4 Real-time developer notifications (recommended, optional)</h3>
+<div class="box step steps">
+<ol>
+<li><strong>Monetize with Play → Monetization setup → Google Play Billing → Real-time developer
+notifications</strong>.</li>
+<li>Create a Cloud Pub/Sub topic, grant Google's publishing service account permission to publish to
+it, and enter the topic name here.</li>
+<li>In RevenueCat's Android app settings, connect the same topic under <strong>Google developer
+notifications</strong>.</li>
+</ol>
+</div>
+<p class="small">This step is optional — RevenueCat's own webhook (Part G) still receives events
+without it, just with slightly less real-time precision on Google's side.</p>
+
+<h2 id="rcdashboard">5. Part C — RevenueCat Dashboard Setup</h2>
+
+<h3>C.1 Create a project and add your apps</h3>
+<div class="box step steps">
+<ol>
+<li><a href="https://app.revenuecat.com">app.revenuecat.com</a> → <strong>+ New Project</strong>.</li>
+<li>Inside the project → <strong>Apps → +</strong> → add an <strong>App Store</strong> app (paste your
+iOS bundle ID, upload the <code>.p8</code> key + Key ID + Issuer ID from A.4) and a <strong>Play
+Store</strong> app (paste your Android package name, upload the service-account JSON from B.3).</li>
+<li>Go to <strong>API keys</strong> — RevenueCat auto-generates one public SDK key per app. Copy the
+iOS key (<code>appl_...</code>) and the Android key (<code>goog_...</code>) — these go into your app
+config, never a secret key.</li>
+</ol>
+</div>
+
+<h3>C.2 Create Entitlements</h3>
+<p>An <strong>Entitlement</strong> is the feature/tier your code checks for (e.g. <code>"pro"</code>),
+decoupled from any specific store product ID. Go to <strong>Entitlements → +</strong>, give it an
+identifier.</p>
+
+<h3>C.3 Create Products &amp; attach them to Entitlements</h3>
+<div class="box step steps">
+<ol>
+<li><strong>Products → +</strong>. Add one product per store per plan, using the <em>exact same</em>
+product/subscription ID you created in App Store Connect / Play Console.</li>
+<li>For each product, attach the relevant Entitlement (e.g. both <code>pro_monthly</code> (iOS) and
+<code>pro_monthly</code> (Android) attach to the <code>"pro"</code> entitlement).</li>
+</ol>
+</div>
+
+<h3>C.4 (Managed mode only) Create an Offering</h3>
+<p>An <strong>Offering</strong> is the set of Packages you actually present in your paywall UI —
+lets you run A/B experiments or region-specific pricing without a client update.
+<strong>Offerings → +</strong> → add Packages, each pointing at one of your Products. Mark one
+Offering as <strong>Current</strong>.</p>
+<p class="small">Observer Mode does not need this — your own IAP code decides what to show, RevenueCat
+just watches. Skip C.4 for Observer Mode.</p>
+
+<h2 id="install">6. Part D — Installing the SDK in Expo</h2>
+<pre><code>npx expo install react-native-purchases
+# Observer Mode with your own purchase flow also needs the purchase library itself, e.g.:
+npx expo install expo-iap</code></pre>
+<p>No config-plugin entry is required in <code>app.json</code>/<code>app.config.js</code> for basic
+purchases — <code>react-native-purchases</code> autolinks like any other native module. You must use
+a custom dev client or EAS Build; it will not run inside Expo Go.</p>
+<div class="box tip">
+Keep both SDK keys out of source control. Read them from <code>process.env</code> inside a dynamic
+<code>app.config.js</code> into <code>extra</code>, and set the corresponding EAS environment
+variables (<code>eas env:create</code>) so cloud builds pick them up too:
+<pre><code>// app.config.js
+export default {
+  expo: {
+    // ...
+    extra: {
+      revenueCatIosKey: process.env.REVENUECAT_IOS_API_KEY,
+      revenueCatAndroidKey: process.env.REVENUECAT_ANDROID_API_KEY,
+    },
+  },
+};</code></pre>
+</div>
+
+<h2 id="managed">7. Part E — Code: RevenueCat-Managed Purchases (Recommended)</h2>
+
+<h3>E.1 Configure the SDK once, early in app startup</h3>
+<pre><code>import { Platform } from 'react-native';
+import Constants from 'expo-constants';
+import Purchases from 'react-native-purchases';
+
+const REVENUECAT_API_KEY = Platform.select({
+  ios: Constants.expoConfig?.extra?.revenueCatIosKey,
+  android: Constants.expoConfig?.extra?.revenueCatAndroidKey,
+});
+
+export function initRevenueCat(userId) {
+  Purchases.configure({
+    apiKey: REVENUECAT_API_KEY,
+    appUserID: userId, // pass your own user id so it matches your backend records
+  });
+}</code></pre>
+
+<h3>E.2 Fetch Offerings and present a paywall</h3>
+<pre><code>const offerings = await Purchases.getOfferings();
+const current = offerings.current;
+
+if (current) {
+  // current.availablePackages: [{ identifier, packageType, product, ... }]
+  return current.availablePackages;
+}</code></pre>
+
+<h3>E.3 Purchase a package</h3>
+<pre><code>import { PurchasesError } from 'react-native-purchases';
+
+async function buy(pkg) {
+  try {
+    const { customerInfo } = await Purchases.purchasePackage(pkg);
+    if (customerInfo.entitlements.active['pro']) {
+      // unlock the feature immediately
+    }
+  } catch (e) {
+    if (!e.userCancelled) {
+      Alert.alert('Purchase failed', e.message);
+    }
+  }
+}</code></pre>
+
+<h3>E.4 Check entitlement status anywhere in the app</h3>
+<pre><code>const customerInfo = await Purchases.getCustomerInfo();
+const isPro = typeof customerInfo.entitlements.active['pro'] !== 'undefined';</code></pre>
+
+<h3>E.5 Restore purchases</h3>
+<pre><code>async function restore() {
+  const customerInfo = await Purchases.restorePurchases();
+  const isPro = typeof customerInfo.entitlements.active['pro'] !== 'undefined';
+}</code></pre>
+
+<h2 id="observer">8. Part F — Code: Observer Mode</h2>
+<p>Use this when you already have a working purchase flow (here shown with
+<code>expo-iap@~3.0.0</code>'s unified API) and only want RevenueCat watching in the background for
+cross-platform entitlement/analytics, without it touching checkout.</p>
+
+<h3>F.1 Configure RevenueCat in Observer Mode</h3>
+<pre><code>import { Platform } from 'react-native';
+import Constants from 'expo-constants';
+
+const REVENUECAT_API_KEY = Platform.select({
+  ios: Constants.expoConfig?.extra?.revenueCatIosKey,
+  android: Constants.expoConfig?.extra?.revenueCatAndroidKey,
+});
+
+let _configured = false;
+
+export function initRevenueCat(userId) {
+  if (_configured || !userId || !REVENUECAT_API_KEY) return;
+  // eslint-disable-next-line global-require
+  const Purchases = require('react-native-purchases').default;
+  const { PURCHASES_ARE_COMPLETED_BY_TYPE, STOREKIT_VERSION } = require('react-native-purchases');
+
+  Purchases.configure({
+    apiKey: REVENUECAT_API_KEY,
+    appUserID: userId,
+    purchasesAreCompletedBy: {
+      type: PURCHASES_ARE_COMPLETED_BY_TYPE.MY_APP,
+      storeKitVersion: STOREKIT_VERSION.STOREKIT_2, // ignored on Android; safe to share
+    },
+  });
+  _configured = true;
+}</code></pre>
+<div class="box tip">
+Call this <em>alongside</em> your existing purchase-flow init (e.g. <code>expo-iap</code>'s
+<code>initConnection()</code>), not instead of it. RevenueCat will independently attach to the same
+native billing client and observe transactions your own code completes.
+</div>
+
+<h3>F.2 Your own purchase flow keeps working unchanged</h3>
+<pre><code>import * as iap from 'expo-iap';
+
+// Fetch products directly from the store (expo-iap ~3.0.0's unified API)
+const products = await iap.fetchProducts({ skus: ['pro_monthly'], type: 'subs' });
+
+// Purchase — Android needs the base-plan offerToken from the fetched product
+const product = products.find((p) => p.id === 'pro_monthly');
+const offerToken = product?.subscriptionOfferDetailsAndroid?.[0]?.offerToken;
+
+await iap.requestPurchase({
+  request: {
+    android: { skus: ['pro_monthly'], ...(offerToken ? { subscriptionOffers: [{ offerToken }] } : {}) },
+    ios: { sku: 'pro_monthly' },
+  },
+  type: 'subs',
+  willAutoRenew: true,
+});</code></pre>
+
+<h3>F.3 Verify the receipt on your own backend (unchanged by RevenueCat)</h3>
+<pre><code>iap.purchaseUpdatedListener(async (purchase) => {
+  if (Platform.OS === 'ios') {
+    // getReceiptDataIOS() returns the classic base64 receipt your backend's
+    // Apple verifyReceipt call expects — NOT the same as purchase.purchaseToken,
+    // which carries the newer StoreKit 2 JWS representation instead.
+    const receipt = await iap.getReceiptDataIOS();
+    await api.post('/payments/iap/apple/verify', { receipt });
+  } else {
+    await api.post('/payments/iap/google/verify', {
+      product_id: purchase.productId,
+      purchase_token: purchase.purchaseToken,
+    });
+  }
+  await iap.finishTransaction({ purchase, isConsumable: false });
+});</code></pre>
+<div class="box warn">
+<strong>Version-migration trap:</strong> <code>expo-iap</code> rewrote its API in ~v2.7/v3.0 into a
+single unified surface. If you're on an older tutorial or upgrading an existing app, watch for these
+renamed/removed members — calling the old names throws <code>TypeError: undefined is not a
+function</code>, which a broad <code>try/catch</code> will silently swallow and make every purchase
+look like "product not found" with no useful error at all:
+<table>
+<tr><th>Old (pre-unified API)</th><th>New (~v3.0.0)</th></tr>
+<tr><td><code>getSubscriptions({ skus })</code></td><td><code>fetchProducts({ skus, type: 'subs' })</code></td></tr>
+<tr><td><code>product.subscriptionOfferDetails</code></td><td><code>product.subscriptionOfferDetailsAndroid</code></td></tr>
+<tr><td><code>product.productId</code> (on a <em>Product</em>, not a Purchase)</td><td><code>product.id</code></td></tr>
+<tr><td><code>purchase.jwsRepresentation</code> / <code>.transactionReceipt</code></td><td><code>await iap.getReceiptDataIOS()</code> for the legacy base64 format; <code>purchase.purchaseToken</code> for the unified JWS</td></tr>
+<tr><td><code>requestPurchase({ type: 'subs', ... })</code></td><td>same, plus a now-required top-level <code>willAutoRenew: boolean</code></td></tr>
+</table>
+</div>
+
+<h2 id="webhooks">9. Part G — Backend Webhooks</h2>
+<h3>G.1 Configure the webhook in RevenueCat</h3>
+<div class="box step steps">
+<ol>
+<li>RevenueCat dashboard → <strong>Integrations → Webhooks → Add new configuration</strong>.</li>
+<li>Set the URL to a backend endpoint (e.g. <code>https://api.yourapp.com/payments/webhook/revenuecat</code>).
+Add an <strong>Authorization header value</strong> — RevenueCat sends it back on every request so you
+can verify the call actually came from RevenueCat.</li>
+<li>Leave <strong>App</strong> as "All apps" if one endpoint should handle both iOS and Android
+events.</li>
+</ol>
+</div>
+
+<h3>G.2 Minimal handler (Python/FastAPI example)</h3>
+<pre><code>@router.post("/webhook/revenuecat", include_in_schema=False)
+async def revenuecat_webhook(request: Request):
+    if request.headers.get("authorization") != REVENUECAT_WEBHOOK_AUTH:
+        raise HTTPException(401, "bad auth")
+
+    body = await request.json()
+    event = body.get("event", {})
+    event_type = event.get("type")
+    app_user_id = event.get("app_user_id")   # your own user id, if passed as appUserID
+    product_id = event.get("product_id")
+
+    if event_type in ("INITIAL_PURCHASE", "RENEWAL", "PRODUCT_CHANGE", "UNCANCELLATION"):
+        await grant_entitlement(app_user_id, product_id)
+    elif event_type in ("CANCELLATION", "EXPIRATION"):
+        await revoke_entitlement(app_user_id)
+
+    return {"ok": True}</code></pre>
+<div class="box tip">
+Passing your own database user ID as RevenueCat's <code>appUserID</code> (in <code>Purchases.configure()</code>)
+means <code>event.app_user_id</code> in the webhook payload is already your primary key — no lookup
+table needed to map RevenueCat's identity back to your user.
+</div>
+
+<h2 id="testing">10. Part H — Testing on Real Devices</h2>
+
+<h3>H.1 iOS</h3>
+<ul>
+<li>Build via EAS (<code>eas build --platform ios --profile production</code> or a dev-client profile)
+and distribute via TestFlight, or run a dev-client build directly.</li>
+<li>On the device: sign into the <strong>Sandbox Account</strong> under Settings → App Store (not your
+main Apple ID). Purchases route to Apple's sandbox automatically.</li>
+<li>Subscriptions in "Waiting for Review"/"In Review" status are still purchasable in Sandbox.</li>
+</ul>
+
+<h3>H.2 Android</h3>
+<ul>
+<li>Build an <code>.aab</code> (<code>eas build --platform android --profile production</code>) and
+upload it to at least the <strong>Internal testing</strong> track in Play Console.</li>
+<li>Add the tester's Google account to an email list attached to that track under <strong>Testers</strong>.
+Being in <em>some</em> tester list in your Play Console account is not enough — the specific list
+must be checked/attached to the specific track you're distributing from.</li>
+<li>Have the tester open the track's official <strong>opt-in link</strong>
+(<code>play.google.com/apps/internaltest/&lt;track-id&gt;</code>) and install/update from there —
+not via a generic Play Store search, which can silently serve the public Production build instead.</li>
+<li>To confirm exactly which build a device actually has installed (the visible "Version" string is
+often identical across many build numbers):
+<pre>adb shell dumpsys package your.package.name | grep -E "versionCode|lastUpdateTime"</pre>
+</li>
+</ul>
+
+<h2 id="pitfalls">11. Part I — Common Pitfalls (Field-Tested)</h2>
+<table>
+<tr><th>Symptom</th><th>Likely cause</th></tr>
+<tr><td>"Product not found" / empty product list on Android, in every region you've personally tested</td>
+<td>Base plan country/region availability defaulted to one country — check <strong>Manage
+country/region availability</strong> on the base plan (§B.2)</td></tr>
+<tr><td>Same symptom, persists after fixing pricing/regions and waiting</td>
+<td>Client-side API mismatch from an <code>expo-iap</code> version upgrade — instrument with
+<code>console.log</code> around the fetch/purchase calls and read live via <code>adb logcat</code>
+rather than assuming it's a store-config issue (§F.3 table)</td></tr>
+<tr><td>iOS products never resolve, on any build, any device</td>
+<td>Paid Apps Agreement not Active, or a Tax Form still shows "Missing" under Agreements, Tax, and
+Banking — check this before anything else (§A.1)</td></tr>
+<tr><td>Test device keeps installing the wrong build even via the correct opt-in link</td>
+<td>Play Store track-serving/propagation delay — fully uninstall, restart the device, re-open the
+opt-in link, and verify the real <code>versionCode</code> via <code>adb</code> before retesting</td></tr>
+<tr><td><code>eas submit</code> fails non-interactively with a credentials prompt</td>
+<td>Add <code>submit.production.ios.ascAppId</code> and/or
+<code>submit.production.android.track</code> to <code>eas.json</code> so it doesn't need to ask
+interactively</td></tr>
+</table>
+
+<h2 id="checklist">Appendix — Full Setup Checklist</h2>
+<table>
+<tr><th>#</th><th>Task</th><th>Where</th></tr>
+<tr><td>1</td><td>Accept Paid Apps Agreement</td><td>App Store Connect</td></tr>
+<tr><td>2</td><td>Add bank account + submit tax form</td><td>App Store Connect</td></tr>
+<tr><td>3</td><td>Create subscription group + subscriptions</td><td>App Store Connect</td></tr>
+<tr><td>4</td><td>Create a sandbox tester</td><td>App Store Connect</td></tr>
+<tr><td>5</td><td>Generate In-App Purchase Key (.p8)</td><td>App Store Connect</td></tr>
+<tr><td>6</td><td>Upload a build to a testing track</td><td>Google Play Console</td></tr>
+<tr><td>7</td><td>Create subscriptions + base plans + <strong>global</strong> pricing</td><td>Google Play Console</td></tr>
+<tr><td>8</td><td>Create/authorize a service account, grant Play Console permissions</td><td>Google Cloud + Play Console</td></tr>
+<tr><td>9</td><td>(Optional) Configure real-time developer notifications</td><td>Google Play Console</td></tr>
+<tr><td>10</td><td>Create RevenueCat project, add iOS + Android apps, copy SDK keys</td><td>RevenueCat</td></tr>
+<tr><td>11</td><td>Upload .p8 key (iOS) and service-account JSON (Android)</td><td>RevenueCat</td></tr>
+<tr><td>12</td><td>Create Entitlements</td><td>RevenueCat</td></tr>
+<tr><td>13</td><td>Create Products, attach to Entitlements</td><td>RevenueCat</td></tr>
+<tr><td>14</td><td>(Managed mode) Create an Offering with Packages</td><td>RevenueCat</td></tr>
+<tr><td>15</td><td>Configure the webhook + auth header</td><td>RevenueCat</td></tr>
+<tr><td>16</td><td>Install SDK, read keys from env, call <code>configure()</code></td><td>App code</td></tr>
+<tr><td>17</td><td>Implement purchase flow (managed or observer) + entitlement checks</td><td>App code</td></tr>
+<tr><td>18</td><td>Implement the webhook handler</td><td>Backend</td></tr>
+<tr><td>19</td><td>Add tester accounts to the Internal Testing track's tester list</td><td>Google Play Console</td></tr>
+<tr><td>20</td><td>Test with a sandbox account (iOS) / internal tester (Android), verifying real installed build via <code>adb</code></td><td>Both</td></tr>
+</table>
+
+<hr>
+<p class="small">This guide reflects a real integration pass against <code>expo-iap@~3.0.0</code> and
+<code>react-native-purchases</code>, including issues that only surface once you actually try to make
+a purchase on a real device — not just what compiles.</p>
+
+</body>
+</html>
