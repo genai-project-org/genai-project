@@ -15,7 +15,7 @@ from services.credit_service import has_credits, deduct_credits
 from services.pricing_engine import spend, resolve_cost
 from services.ai_service import (
     stream_ai_response, MODEL_CATALOG, ensure_model_allowed, is_premium_model,
-    user_allows_premium,
+    user_allows_premium, default_model_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,9 +28,13 @@ CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
 async def list_models(user: User = Depends(get_current_user)):
     # `locked` is per-caller so the picker can grey out what this plan cannot use.
     may_use_premium = await user_allows_premium(user.id, user.role)
+    # `default` follows the user's Settings → AI provider choice, so the picker preselects a
+    # model from the provider they asked for. None (iema/auto) keeps the catalog's own flag.
+    pref_id = default_model_id(user.ai_provider)
     return {"items": [{
         "id": m["id"], "name": m["name"], "label": m["label"],
-        "description": m["description"], "default": m.get("default", False),
+        "description": m["description"],
+        "default": (m["id"] == pref_id) if pref_id else m.get("default", False),
         "premium": bool(m.get("premium")),
         "locked": bool(m.get("premium")) and not may_use_premium,
     } for m in MODEL_CATALOG]}
