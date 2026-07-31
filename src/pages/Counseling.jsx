@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Loader2, Heart, Briefcase, GraduationCap, Send, Volume2, Square, Clock, Trash2 } from 'lucide-react';
+import { Loader2, Heart, Briefcase, GraduationCap, Send, Volume2, Square, Clock, Trash2, Copy, Check, Pencil, Flag } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
@@ -22,6 +22,9 @@ export default function Counseling() {
   const [speakingIdx, setSpeakingIdx] = useState(null);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [editIdx, setEditIdx] = useState(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [copiedIdx, setCopiedIdx] = useState(null);
   const scrollRef = useRef(null);
   const pendingRestore = useRef(null);
   const activeMode = MODES.find(m => m.key === mode);
@@ -29,7 +32,7 @@ export default function Counseling() {
   // Load history from backend (syncs across devices) — normalize to {id, mode, q, a, ts}.
   useEffect(() => {
     api.get('/counseling/history')
-      .then(({ data }) => setHistory(data.items.map(it => ({ id: it.id, mode: it.mode, q: it.question, a: it.answer, ts: it.created_at }))))
+      .then(({ data }) => setHistory(data.items.map(it => ({ id: it.id, mode: it.mode, q: it.question, a: it.answer, ts: it.created_at, flagged: it.flagged }))))
       .catch(() => {});
   }, []);
 
@@ -74,28 +77,95 @@ export default function Counseling() {
     synth.speak(u);
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (text.length < 3) return;
-    const userMsg = { role: 'user', text };
-    setMessages(prev => [...prev, userMsg]); setInput(''); setLoading(true);
+  // `replaceAt` is the index of an existing question being re-asked; its old answer is
+  // swapped in place. Counseling turns are independent (the backend sends no thread history
+  // to the model), so editing one exchange must not disturb the others.
+  // Call this explicitly, never as a bare event handler, or the click event lands in `text`.
+  const send = async (overrideText, replaceAt) => {
+    const resending = typeof overrideText === 'string';
+    const text = (resending ? overrideText : input).trim();
+    if (text.length < 3 || loading) return;
+    if (!resending) setInput('');
+    setLoading(true);
+
+    if (resending) {
+      setMessages(prev => {
+        const next = [...prev];
+        next[replaceAt] = { ...next[replaceAt], text };
+        if (next[replaceAt + 1]?.role === 'assistant') next.splice(replaceAt + 1, 1);
+        return next;
+      });
+    } else {
+      setMessages(prev => [...prev, { role: 'user', text }]);
+    }
+
     try {
       const { data } = await api.post('/counseling', { mode, message: text });
       // wallet counter is updated by the response interceptor in lib/api.js
-      setMessages(prev => [...prev, {
+      const answer = {
         role: 'assistant', text: data.response, source: data.source,
         score: data.score, disclaimer: data.disclaimer, credits: data.credits_used,
-      }]);
+        historyId: data.id,
+      };
+      setMessages(prev => {
+        if (!resending) return [...prev, answer];
+        const next = [...prev];
+        next.splice(replaceAt + 1, 0, answer);
+        return next;
+      });
       // Backend already persisted this exchange — reflect it locally (newest first).
-      setHistory(prev => [{ mode, q: text, a: data.response, ts: new Date().toISOString() }, ...prev]);
+      setHistory(prev => [{ id: data.id, mode, q: text, a: data.response, ts: new Date().toISOString() }, ...prev]);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Counsel failed');
     } finally { setLoading(false); }
   };
 
+  const copyText = (text, i) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIdx(i);
+    setTimeout(() => setCopiedIdx(null), 1500);
+  };
+
+  const startEdit = (i, text) => { setEditDraft(text); setEditIdx(i); };
+
+  const saveEdit = (i) => {
+    const next = editDraft.trim();
+    setEditIdx(null);
+    if (next.length < 3 || next === messages[i].text) return;
+    editExchange(i, next);
+  };
+
+  const editExchange = async (idx, newText) => {
+    if (loading) return;
+    const old = messages[idx + 1];
+    if (old?.historyId) {
+      // Remove the superseded exchange so stored history matches what is on screen.
+      await api.delete(`/counseling/history/${old.historyId}`).catch(() => {});
+      setHistory(prev => prev.filter(h => h.id !== old.historyId));
+    }
+    await send(newText, idx);
+  };
+
+  const toggleFlag = async (idx) => {
+    const ans = messages[idx + 1];
+    if (!ans?.historyId) { toast.error('Wait for the reply, then you can flag it'); return; }
+    try {
+      const { data } = await api.post(`/counseling/history/${ans.historyId}/flag`);
+      setMessages(prev => prev.map((m, i) => (i === idx + 1 ? { ...m, flagged: data.flagged } : m)));
+      setHistory(prev => prev.map(h => (h.id === ans.historyId ? { ...h, flagged: data.flagged } : h)));
+      toast.success(data.flagged ? 'Flagged' : 'Flag removed');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not flag that exchange');
+    }
+  };
+
   const openHistory = (h) => {
     setShowHistory(false);
-    const restored = [{ role: 'user', text: h.q }, { role: 'assistant', text: h.a }];
+    // historyId travels with the restored answer so Edit and Flag work on it too.
+    const restored = [
+      { role: 'user', text: h.q },
+      { role: 'assistant', text: h.a, historyId: h.id, flagged: h.flagged },
+    ];
     if (h.mode !== mode) { pendingRestore.current = restored; setMode(h.mode); }
     else setMessages(restored);
   };
@@ -195,13 +265,75 @@ export default function Counseling() {
             />
           )}
           {messages.map((m, i) => (
-            <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
+            <div key={i} className={cn('group flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
               <div className={cn(
                 'max-w-[85%] rounded-2xl px-4 py-3',
                 m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-card border border-border'
               )}>
                 {m.role === 'user' ? (
-                  <div className="text-sm">{m.text}</div>
+                  editIdx === i ? (
+                    <div className="space-y-2 min-w-[16rem]" data-testid="counseling-edit">
+                      <Textarea
+                        value={editDraft}
+                        onChange={(e) => setEditDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit(i); }
+                          if (e.key === 'Escape') setEditIdx(null);
+                        }}
+                        rows={3}
+                        autoFocus
+                        className="resize-none bg-background text-foreground"
+                        data-testid="counseling-edit-input"
+                      />
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => setEditIdx(null)}
+                          className="text-xs text-primary-foreground/70 hover:text-primary-foreground"
+                          data-testid="counseling-edit-cancel"
+                        >
+                          Cancel
+                        </button>
+                        <Button
+                          size="sm" variant="secondary"
+                          onClick={() => saveEdit(i)}
+                          disabled={editDraft.trim().length < 3 || editDraft.trim() === m.text}
+                          data-testid="counseling-edit-save"
+                        >
+                          Ask again
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="text-sm">{m.text}</div>
+                      {/* Only this exchange is replaced on edit — counseling turns carry no
+                          shared context, so the answers above and below are untouched. */}
+                      <div className="flex items-center justify-end gap-3 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => copyText(m.text, i)}
+                          className="text-xs text-primary-foreground/70 hover:text-primary-foreground flex items-center gap-1.5"
+                          data-testid="counseling-copy-btn"
+                        >
+                          {copiedIdx === i ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                        </button>
+                        <button
+                          onClick={() => startEdit(i, m.text)}
+                          className="text-xs text-primary-foreground/70 hover:text-primary-foreground flex items-center gap-1.5"
+                          data-testid="counseling-edit-btn"
+                        >
+                          <Pencil className="h-3 w-3" /> Edit
+                        </button>
+                        <button
+                          onClick={() => toggleFlag(i)}
+                          className="text-xs text-primary-foreground/70 hover:text-primary-foreground flex items-center gap-1.5"
+                          data-testid="counseling-flag-btn"
+                        >
+                          <Flag className={cn('h-3 w-3', messages[i + 1]?.flagged && 'fill-current')} />
+                          {messages[i + 1]?.flagged ? 'Flagged' : 'Flag'}
+                        </button>
+                      </div>
+                    </>
+                  )
                 ) : (
                   <>
                     <div className="prose-chat text-sm">
@@ -262,7 +394,7 @@ export default function Counseling() {
             className="resize-none min-h-[52px] max-h-40"
             data-testid="counseling-input"
           />
-          <Button onClick={send} disabled={loading || input.trim().length < 3} className="h-[52px] px-5" data-testid="counseling-send-btn">
+          <Button onClick={() => send()} disabled={loading || input.trim().length < 3} className="h-[52px] px-5" data-testid="counseling-send-btn">
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </div>

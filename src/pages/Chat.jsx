@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import {
   Send, Sparkles, MessageSquare, Trash2, Pin, PinOff, Loader2,
-  Copy, Check, Search, Plus, Paperclip, X, ImageIcon, ChevronRight,
+  Copy, Check, Search, Plus, Paperclip, X, ImageIcon, ChevronRight, Pencil, Flag,
   Share2, GraduationCap, Activity, Briefcase, Megaphone, Palette, Smile, Target, Plane
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -107,6 +107,8 @@ export default function Chat() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [flagged, setFlagged] = useState([]);
+  const [flagOpen, setFlagOpen] = useState(false);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
@@ -157,21 +159,58 @@ export default function Chat() {
     setMessages(data.messages);
   };
 
+  const loadFlagged = () =>
+    api.get('/chat/flagged').then(({ data }) => setFlagged(data.items)).catch(() => {});
+
+  useEffect(() => { loadFlagged(); }, []);
+
+  const toggleFlag = async (message) => {
+    try {
+      const { data } = await api.post(`/chat/messages/${message.id}/flag`);
+      setMessages((m) => m.map((x) => (x.id === message.id ? { ...x, flagged: data.flagged } : x)));
+      loadFlagged();
+      toast.success(data.flagged ? 'Prompt flagged' : 'Flag removed');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not flag that prompt');
+    }
+  };
+
+  // Editing a prompt drops it and everything after it, then resends — same as starting the
+  // conversation over from that point. The server truncates first so its history matches
+  // what the user sees; if that fails we resend nothing rather than duplicate the thread.
+  const editMessage = async (message, newText) => {
+    if (streaming) return;
+    const idx = messages.findIndex((m) => m.id === message.id);
+    if (idx < 0) return;
+    try {
+      await api.delete(`/chat/conversations/${activeId}/messages/${message.id}`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not edit that message');
+      return;
+    }
+    setMessages((m) => m.slice(0, idx));
+    loadFlagged();   // the truncate may have removed flagged prompts
+    await handleSend(newText, message.attachments || []);
+  };
+
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, streamText]);
 
-  const handleSend = async () => {
-    const text = input.trim();
-    if ((!text && attachments.length === 0) || streaming) return;
+  // `overrideText`/`overrideAttachments` are set when resending an edited prompt — the
+  // composer is left alone in that case. Callers must invoke this explicitly, never as a
+  // bare event handler, or the click event would arrive as overrideText.
+  const handleSend = async (overrideText, overrideAttachments) => {
+    const resending = typeof overrideText === 'string';
+    const text = (resending ? overrideText : input).trim();
+    const sentAttachments = resending ? (overrideAttachments || []) : [...attachments];
+    if ((!text && sentAttachments.length === 0) || streaming) return;
     if (!text) { toast.error('Please add a message with your image'); return; }
 
-    setInput('');
+    if (!resending) { setInput(''); setAttachments([]); }
     setStreaming(true);
     setStreamText('');
     setMeta(null);
-    const sentAttachments = [...attachments];
-    setAttachments([]);
     // Optimistically add user message
     const tempUserMsg = { id: 'tmp-' + Date.now(), role: 'user', content: text, attachments: sentAttachments };
     setMessages((m) => [...m, tempUserMsg]);
@@ -211,6 +250,11 @@ export default function Chat() {
             if (obj.type === 'conversation') {
               convId = obj.conversation_id;
               if (!activeId) setActiveId(convId);
+              // Swap the optimistic id for the real one, so Edit works on a message you
+              // just sent instead of only after reopening the conversation.
+              if (obj.user_message_id) {
+                setMessages((m) => m.map((x) => (x.id === tempUserMsg.id ? { ...x, id: obj.user_message_id } : x)));
+              }
             } else if (obj.type === 'meta') {
               finalMeta = obj;
               setMeta(obj);
@@ -250,6 +294,7 @@ export default function Chat() {
     await api.delete(`/chat/conversations/${id}`);
     if (activeId === id) { setActiveId(null); setMessages([]); }
     loadConversations();
+    loadFlagged();   // its messages are gone, so any flags on them are too
   };
 
   const togglePin = async (id) => {
@@ -299,6 +344,36 @@ export default function Chat() {
             <Input placeholder="Search chats" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8 h-8 text-sm" />
           </div>
         </div>
+
+        {/* Flagged prompts — reuse them by clicking into the conversation they came from */}
+        {flagged.length > 0 && (
+          <div className="border-b border-border flex flex-col" data-testid="chat-flagged">
+            <button
+              onClick={() => setFlagOpen((v) => !v)}
+              className="flex items-center gap-1 px-3 py-2 text-[11px] uppercase tracking-wider text-muted-foreground/70 font-medium hover:text-muted-foreground"
+              data-testid="chat-flagged-toggle"
+            >
+              <ChevronRight className={cn('h-3 w-3 transition-transform', flagOpen && 'rotate-90')} strokeWidth={2.5} />
+              <span>Flagged Prompts</span>
+              <span className="ml-auto text-primary normal-case tracking-normal">{flagged.length}</span>
+            </button>
+            {flagOpen && (
+              <div className="overflow-y-auto px-2 pb-2 max-h-[30vh]">
+                {flagged.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => (f.conversation_id ? openConv(f.conversation_id) : setInput(f.content))}
+                    title={f.content}
+                    className="w-full text-left flex items-start gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                  >
+                    <Flag className="h-3 w-3 flex-shrink-0 mt-0.5 text-primary fill-current" />
+                    <span className="line-clamp-2 flex-1">{f.content}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Templates */}
         <div className="border-b border-border flex flex-col" data-testid="chat-templates">
@@ -411,7 +486,14 @@ export default function Chat() {
           )}
 
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-            {messages.map((m) => <MessageBlock key={m.id} message={m} />)}
+            {messages.map((m) => (
+              <MessageBlock
+                key={m.id}
+                message={m}
+                onEdit={streaming ? undefined : editMessage}
+                onFlag={toggleFlag}
+              />
+            ))}
             {streaming && streamText && (
               <MessageBlock message={{ role: 'assistant', content: streamText, provider: meta?.provider, model: meta?.model, streaming: true }} />
             )}
@@ -485,7 +567,7 @@ export default function Chat() {
               </button>
               <Button
                 data-testid={CHAT.sendBtn}
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={(!input.trim() && attachments.length === 0) || streaming}
                 size="icon"
                 className="absolute right-2 bottom-2 h-8 w-8 rounded-lg"
@@ -503,14 +585,29 @@ export default function Chat() {
   );
 }
 
-function MessageBlock({ message }) {
+function MessageBlock({ message, onEdit, onFlag }) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
   const copy = () => {
     navigator.clipboard.writeText(message.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
   const isUser = message.role === 'user';
+  // A tmp- id means the optimistic message has no server row yet, so there is nothing to
+  // truncate from or flag — both appear once the stream reports the real id.
+  const hasRow = !String(message.id || '').startsWith('tmp-');
+  const canEdit = isUser && !!onEdit && hasRow;
+  const canFlag = isUser && !!onFlag && hasRow;
+
+  const startEdit = () => { setDraft(message.content); setEditing(true); };
+  const saveEdit = () => {
+    const next = draft.trim();
+    if (!next || next === message.content) { setEditing(false); return; }
+    setEditing(false);
+    onEdit(message, next);
+  };
   return (
     <div data-testid={CHAT.message} className={cn('group flex gap-4 animate-fade-in-up', isUser && 'flex-row-reverse')}>
       <div className={cn(
@@ -520,6 +617,44 @@ function MessageBlock({ message }) {
         {isUser ? <span className="text-xs font-semibold">You</span> : <Sparkles className="h-4 w-4" />}
       </div>
       <div className={cn('flex-1 min-w-0', isUser && 'flex justify-end')}>
+        {editing ? (
+          <div className="w-full max-w-[85%] space-y-2" data-testid="chat-message-edit">
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit(); }
+                if (e.key === 'Escape') setEditing(false);
+              }}
+              rows={3}
+              autoFocus
+              className="resize-none"
+              data-testid="chat-message-edit-input"
+            />
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11px] text-muted-foreground">
+                Resending replaces every reply after this message.
+              </span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setEditing(false)}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  data-testid="chat-message-edit-cancel"
+                >
+                  Cancel
+                </button>
+                <Button
+                  size="sm"
+                  onClick={saveEdit}
+                  disabled={!draft.trim() || draft.trim() === message.content}
+                  data-testid="chat-message-edit-save"
+                >
+                  Send
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className={cn(
           isUser ? 'rounded-2xl rounded-tr-sm bg-primary/10 border border-primary/20 px-4 py-2.5 max-w-[85%]' : 'w-full'
         )}>
@@ -543,7 +678,42 @@ function MessageBlock({ message }) {
               {message.model && <span className="text-xs text-muted-foreground">{message.model}</span>}
             </div>
           )}
+          {isUser && (
+            <div className="flex items-center justify-end gap-3 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              {/* Copy works on an optimistic message too; Edit needs a real id to truncate from. */}
+              <button
+                onClick={copy}
+                className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5"
+                data-testid="chat-prompt-copy-btn"
+              >
+                {copied ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+              </button>
+              {canEdit && (
+                <button
+                  onClick={startEdit}
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5"
+                  data-testid="chat-message-edit-btn"
+                >
+                  <Pencil className="h-3 w-3" /> Edit
+                </button>
+              )}
+              {canFlag && (
+                <button
+                  onClick={() => onFlag(message)}
+                  className={cn(
+                    'text-xs flex items-center gap-1.5',
+                    message.flagged ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  data-testid="chat-prompt-flag-btn"
+                >
+                  <Flag className={cn('h-3 w-3', message.flagged && 'fill-current')} />
+                  {message.flagged ? 'Flagged' : 'Flag'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
+        )}
       </div>
     </div>
   );
