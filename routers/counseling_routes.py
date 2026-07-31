@@ -1,6 +1,7 @@
 """Counseling routes — Career, Psychology, Academic AI counselor."""
 import os
 import logging
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from auth import get_current_user
@@ -45,12 +46,14 @@ async def counsel_route(req: CounselRequest, user: User = Depends(get_current_us
                  "source": result["source"], "score": result.get("score")},
     )
     # Persist for cross-device history (see GET/DELETE /counseling/history)
-    await counseling_history_col.insert_one({
+    res = await counseling_history_col.insert_one({
         "user_id": user.id, "mode": req.mode,
         "question": req.message, "answer": result["response"],
         "created_at": now_iso(),
     })
     return {
+        # The client needs this to flag or replace the exchange it just created.
+        "id": str(res.inserted_id),
         "response": result["response"],
         "mode": req.mode,
         "source": result["source"],
@@ -66,7 +69,8 @@ async def counsel_route(req: CounselRequest, user: User = Depends(get_current_us
 async def counseling_history(limit: int = 50, user: User = Depends(get_current_user)):
     cursor = counseling_history_col.find({"user_id": user.id}).sort("created_at", -1).limit(min(limit, 100))
     items = [{"id": str(d["_id"]), "mode": d["mode"], "question": d["question"],
-              "answer": d["answer"], "created_at": d.get("created_at")} async for d in cursor]
+              "answer": d["answer"], "created_at": d.get("created_at"),
+              "flagged": bool(d.get("flagged"))} async for d in cursor]
     return {"items": items}
 
 
@@ -74,6 +78,35 @@ async def counseling_history(limit: int = 50, user: User = Depends(get_current_u
 async def clear_counseling_history(user: User = Depends(get_current_user)):
     await counseling_history_col.delete_many({"user_id": user.id})
     return {"ok": True}
+
+
+@router.delete("/history/{entry_id}")
+async def delete_counseling_entry(entry_id: str, user: User = Depends(get_current_user)):
+    """Drop a single exchange. Backs "edit prompt": counseling turns are independent — the
+    LLM is sent one message with no thread context — so re-asking replaces only this pair
+    and leaves every other answer alone.
+    """
+    try:
+        res = await counseling_history_col.delete_one({"_id": ObjectId(entry_id), "user_id": user.id})
+    except Exception:
+        raise HTTPException(400, "Invalid entry id")
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Entry not found")
+    return {"ok": True}
+
+
+@router.post("/history/{entry_id}/flag")
+async def toggle_counseling_flag(entry_id: str, user: User = Depends(get_current_user)):
+    """Toggle a personal bookmark on one of the user's own exchanges."""
+    try:
+        doc = await counseling_history_col.find_one({"_id": ObjectId(entry_id), "user_id": user.id})
+    except Exception:
+        raise HTTPException(400, "Invalid entry id")
+    if not doc:
+        raise HTTPException(404, "Entry not found")
+    flagged = not doc.get("flagged", False)
+    await counseling_history_col.update_one({"_id": doc["_id"]}, {"$set": {"flagged": flagged}})
+    return {"flagged": flagged}
 
 
 def _disclaimer(mode: str) -> str:

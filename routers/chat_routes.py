@@ -107,6 +107,65 @@ async def delete_conversation(conv_id: str, user: User = Depends(get_current_use
     return {"ok": True}
 
 
+@router.post("/messages/{message_id}/flag")
+async def toggle_message_flag(message_id: str, user: User = Depends(get_current_user)):
+    """Toggle a personal bookmark on one of the user's own messages."""
+    try:
+        msg = await messages_col.find_one({"_id": ObjectId(message_id), "user_id": user.id})
+    except Exception:
+        raise HTTPException(400, "Invalid message id")
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    flagged = not msg.get("flagged", False)
+    await messages_col.update_one({"_id": msg["_id"]}, {"$set": {"flagged": flagged}})
+    return {"flagged": flagged}
+
+
+@router.get("/flagged")
+async def list_flagged(limit: int = 50, user: User = Depends(get_current_user)):
+    """The user's flagged prompts, newest first — backs the Flagged Prompts sidebar list.
+
+    ponytail: unindexed find on `messages`; add a {user_id, flagged} compound index if the
+    collection grows enough for this to show up in profiling.
+    """
+    cursor = messages_col.find({"user_id": user.id, "flagged": True}).sort("created_at", -1).limit(min(limit, 200))
+    items = [{
+        "id": str(d["_id"]), "conversation_id": d.get("conversation_id"),
+        "role": d.get("role"), "content": d.get("content", ""),
+        "created_at": d.get("created_at"),
+    } async for d in cursor]
+    return {"items": items}
+
+
+@router.delete("/conversations/{conv_id}/messages/{message_id}")
+async def delete_from_message(conv_id: str, message_id: str, user: User = Depends(get_current_user)):
+    """Delete `message_id` and every message after it in the conversation.
+
+    Backs "edit prompt": the client truncates here, then re-sends the edited text through
+    /chat/stream, which appends a fresh exchange. That keeps editing on the normal send path,
+    so streaming, billing and history need no special cases.
+    """
+    try:
+        conv = await conversations_col.find_one({"_id": ObjectId(conv_id), "user_id": user.id})
+        msg = await messages_col.find_one({"_id": ObjectId(message_id), "conversation_id": conv_id})
+    except Exception:
+        raise HTTPException(400, "Invalid conversation or message id")
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if not msg:
+        raise HTTPException(404, "Message not found")
+
+    # created_at is an ISO-8601 UTC string with microseconds (db.now_iso), which sorts
+    # lexicographically the same way it sorts chronologically — the same ordering
+    # get_conversation already relies on.
+    result = await messages_col.delete_many({
+        "conversation_id": conv_id,
+        "created_at": {"$gte": msg["created_at"]},
+    })
+    await conversations_col.update_one({"_id": ObjectId(conv_id)}, {"$set": {"updated_at": now_iso()}})
+    return {"deleted": result.deleted_count}
+
+
 @router.post("/stream")
 async def stream_message(req: SendMessageRequest, user: User = Depends(get_current_user)):
     """SSE streaming endpoint for chat messages."""
