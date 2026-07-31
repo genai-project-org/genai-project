@@ -184,13 +184,20 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                 )
                 asst_res = await messages_col.insert_one(asst_msg.to_mongo())
                 # Central spend (window + wallet + provider tracking)
+                # Carry the post-charge balance out to the `saved` event below: this endpoint
+                # is consumed by raw fetch, so it bypasses the axios interceptor that keeps
+                # the wallet counter fresh everywhere else. Stays None if the spend is
+                # swallowed, and keeps the last good value if an image spend trips the window.
+                balance = None
                 try:
-                    await spend(user.id, "chat_message", provider_override=provider,
-                                description=f"Chat message ({model})", ref_id=conv_id)
+                    billing = await spend(user.id, "chat_message", provider_override=provider,
+                                          description=f"Chat message ({model})", ref_id=conv_id)
+                    balance = billing["balance"]
                     if image_count:
                         for _ in range(image_count):
-                            await spend(user.id, "chat_message_image", provider_override=provider,
-                                        description=f"Chat image ({model})", ref_id=conv_id)
+                            billing = await spend(user.id, "chat_message_image", provider_override=provider,
+                                                  description=f"Chat image ({model})", ref_id=conv_id)
+                            balance = billing["balance"]
                 except HTTPException:
                     # rate-limit — already deducted via primary msg; ignore silently for chat
                     pass
@@ -208,7 +215,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                     "credits_used": total_cost,
                     "created_at": now_iso(),
                 })
-                yield f"data: {json.dumps({'type': 'saved', 'assistant_message_id': str(asst_res.inserted_id), 'credits_used': total_cost})}\n\n"
+                yield f"data: {json.dumps({'type': 'saved', 'assistant_message_id': str(asst_res.inserted_id), 'credits_used': total_cost, 'balance': balance})}\n\n"
         except Exception as e:
             logger.exception("Chat stream error")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -328,7 +335,7 @@ async def send_message(
 
     result = await messages_col.insert_one(assistant.to_mongo())
 
-    await spend(
+    billing = await spend(
         user.id,
         "chat_message",
         provider_override=provider,
@@ -338,7 +345,7 @@ async def send_message(
 
     if image_count:
         for _ in range(image_count):
-            await spend(
+            billing = await spend(
                 user.id,
                 "chat_message_image",
                 provider_override=provider,
@@ -375,4 +382,5 @@ async def send_message(
         "provider": provider,
         "model": model,
         "credits_used": total_cost,
+        "balance": billing["balance"],
     }

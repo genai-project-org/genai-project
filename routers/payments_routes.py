@@ -137,10 +137,12 @@ async def razorpay_link_status(link_id: str, user: User = Depends(get_current_us
         logger.exception(f"payment_link.fetch failed: {e}")
         raise HTTPException(400, "Failed to fetch payment link")
     status = link.get("status")  # 'created' | 'partially_paid' | 'paid' | 'cancelled' | 'expired'
+    balance = None
     if status == "paid" and not tx.credited:
-        await add_credits(user.id, tx.credits, bucket="purchased", kind="purchase",
-                          description=f"Purchase: {tx.pack_slug}",
-                          ref_id=link_id)
+        wallet = await add_credits(user.id, tx.credits, bucket="purchased", kind="purchase",
+                                   description=f"Purchase: {tx.pack_slug}",
+                                   ref_id=link_id)
+        balance = wallet.total
         await payment_transactions_col.update_one(
             {"order_id": link_id},
             {"$set": {"status": "paid", "credited": True, "updated_at": now_iso()}},
@@ -156,6 +158,9 @@ async def razorpay_link_status(link_id: str, user: User = Depends(get_current_us
         "credited": tx.credited,
         "credits": tx.credits,
         "short_url": link.get("short_url"),
+        # Lets the axios interceptor refresh the sidebar counter right after a top-up.
+        # None on the polls before payment lands, so it is simply ignored then.
+        "balance": balance,
     }
 
 
@@ -177,8 +182,10 @@ async def verify_razorpay(req: RazorpayVerifyRequest, user: User = Depends(get_c
         raise HTTPException(404, "Transaction not found")
     tx = PaymentTransaction.from_mongo(tx_doc)
 
+    balance = None
     if not tx.credited:
-        await add_credits(user.id, tx.credits, bucket="purchased", kind="purchase", description=f"Purchase: {tx.pack_slug}", ref_id=req.razorpay_payment_id)
+        wallet = await add_credits(user.id, tx.credits, bucket="purchased", kind="purchase", description=f"Purchase: {tx.pack_slug}", ref_id=req.razorpay_payment_id)
+        balance = wallet.total
         await payment_transactions_col.update_one(
             {"order_id": req.razorpay_order_id},
             {"$set": {"status": "paid", "credited": True, "payment_id": req.razorpay_payment_id, "updated_at": now_iso()}},
@@ -187,7 +194,7 @@ async def verify_razorpay(req: RazorpayVerifyRequest, user: User = Depends(get_c
         dc = (tx_doc.get("metadata") or {}).get("discount")
         if dc and dc.get("code"):
             await increment_use(dc["code"])
-    return {"ok": True, "credits": tx.credits}
+    return {"ok": True, "credits": tx.credits, "balance": balance}
 
 
 @router.get("/fx-rate")
