@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, Alert, TouchableOpacity } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import api from '../api';
-import { logout, setAuth } from '../store/slices/authSlice';
+import { logout, setUser } from '../store/slices/authSlice';
 import ScreenHeader from '../components/ScreenHeader';
 import { Card, Button, Input, Label } from '../components/UI';
 import { colors, spacing, fontSize, radii } from '../theme';
@@ -27,7 +27,9 @@ export default function SettingsScreen({ navigation }) {
     setProvider(p);
     try {
       const { data } = await api.patch('/auth/me', { ai_provider: p });
-      dispatch(setAuth({ user: data }));
+      // setUser, not setAuth: setAuth throws on payload.tokens.access_token, so the redux
+      // update was silently lost to the empty catch below.
+      dispatch(setUser(data));
     } catch {}
   };
 
