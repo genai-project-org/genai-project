@@ -121,6 +121,10 @@ def _user_to_public(user: User) -> UserPublic:
         email_verified=user.email_verified,
         theme=user.theme,
         created_at=user.created_at,
+        # Both are declared on UserPublic with defaults, so omitting them silently reported
+        # ai_provider="iema" / plan="free" for everyone — the Settings badge reset on reload.
+        ai_provider=user.ai_provider,
+        plan=user.plan,
     )
 
 @router.api_route("/callback", methods=["GET", "POST"])

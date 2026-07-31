@@ -46,6 +46,7 @@ DEFAULT_PRICING = [
     {"_id": "studio_video_lite_8s",   "credit_cost": 60,  "provider": "google",   "category": "studio",     "description": "Veo Lite video (8s)"},
     {"_id": "career_job_search",      "credit_cost": 0,  "provider": "adzuna",    "category": "career",     "description": "Job search (Adzuna)"},
     {"_id": "career_learning_path",   "credit_cost": 5,  "provider": "anthropic", "category": "career",     "description": "Career learning roadmap"},
+    {"_id": "resume_analyze",         "credit_cost": 10, "provider": "anthropic", "category": "career",     "description": "Resume ATS analysis"},
     {"_id": "counseling_career",      "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Career counseling"},
     {"_id": "counseling_psychology",  "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Wellness counseling"},
     {"_id": "counseling_academic",    "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Academic counseling"},

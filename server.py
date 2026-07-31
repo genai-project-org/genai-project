@@ -27,6 +27,7 @@ from routers.studio_routes import router as studio_router
 from routers.career_routes import router as career_router
 from routers.builder_routes import router as builder_router
 from routers.counseling_routes import router as counseling_router
+from routers.resume_routes import router as resume_router
 from middleware.data_lake_middleware import DataLakeMiddleware
 from middleware.security import SecurityHeadersMiddleware, AdminHMACMiddleware, limiter
 from slowapi.errors import RateLimitExceeded
@@ -75,6 +76,7 @@ api_router.include_router(studio_router)
 api_router.include_router(career_router)
 api_router.include_router(builder_router)
 api_router.include_router(counseling_router)
+api_router.include_router(resume_router)
 
 # Stripe was removed; nothing to mount at /api/webhook/stripe anymore.
 

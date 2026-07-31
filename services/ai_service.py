@@ -48,6 +48,26 @@ def max_tokens_for(model: str) -> Optional[int]:
     return sel.get("max_tokens") if sel else None
 
 
+# The Settings page's ai_provider preference decides which catalog row the model pickers
+# preselect. All four pickers (web Chat/Studio, mobile Chat/Studio) key off the `default`
+# flag served by GET /chat/models, so resolving it here covers every one of them with no
+# client change.
+_PREF_PROVIDER = {"claude": "anthropic", "openai": "openai"}
+
+
+def default_model_id(ai_provider: Optional[str]) -> Optional[str]:
+    """Catalog id to preselect for this preference, or None to keep the static default.
+
+    Only non-premium rows are eligible: a free user must never be preselected onto a locked
+    option, and the mobile pickers don't filter `locked` at all.
+    """
+    want = _PREF_PROVIDER.get(ai_provider or "")
+    if not want:
+        return None  # iema / auto / unset → the catalog's own default
+    return next((m["id"] for m in MODEL_CATALOG
+                 if m.get("provider") == want and not m.get("premium")), None)
+
+
 # ---- premium (paid-plan-only) models -------------------------------------
 # The high-cost models burn several times the tokens of Haiku/mini for the same
 # flat credit price, so they are reserved for paid plans and admins.
@@ -182,3 +202,31 @@ def _history_prefix(history: List[Dict], max_msgs: int = 10) -> str:
         role = "User" if m.get("role") == "user" else "Assistant"
         lines.append(f"{role}: {m.get('content', '')}")
     return "Previous conversation:\n" + "\n".join(lines)
+
+
+def demo() -> None:
+    """Offline self-check: python -m services.ai_service"""
+    # Preference → preselected catalog row
+    assert default_model_id("claude") == "claude-haiku-4-5-20251001"
+    assert default_model_id("openai") == "gpt-5-mini"
+    # iema / auto / unset / junk all fall through to the catalog's own `default` flag
+    for pref in ("iema", "auto", "", None, "garbage"):
+        assert default_model_id(pref) is None, pref
+
+    # Whatever a preference resolves to must be a real, usable row — this is the assertion
+    # that catches a phantom id like gpt-4o-mini, which is not in the catalog at all.
+    for pref in ("claude", "openai"):
+        mid = default_model_id(pref)
+        row = _MODEL_BY_ID.get(mid)
+        assert row is not None, f"{pref} → {mid} is not in MODEL_CATALOG"
+        assert not row.get("premium"), f"{pref} → {mid} is premium; free users would be locked out"
+        assert resolve_provider_model(mid) == (row["provider"], mid), mid
+
+    # Exactly one static default, so the fall-through case is unambiguous
+    assert sum(1 for m in MODEL_CATALOG if m.get("default")) == 1
+
+    print("ai_service demo OK")
+
+
+if __name__ == "__main__":
+    demo()

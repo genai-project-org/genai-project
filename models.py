@@ -133,6 +133,7 @@ class Message(BaseDocument):
     tokens_in: int = 0
     tokens_out: int = 0
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
+    flagged: bool = False  # personal bookmark; drives the "Flagged Prompts" sidebar list
     created_at: str = Field(default_factory=lambda: now_utc().isoformat())
 
 

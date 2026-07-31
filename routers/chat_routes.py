@@ -15,7 +15,7 @@ from services.credit_service import has_credits, deduct_credits
 from services.pricing_engine import spend, resolve_cost
 from services.ai_service import (
     stream_ai_response, MODEL_CATALOG, ensure_model_allowed, is_premium_model,
-    user_allows_premium,
+    user_allows_premium, default_model_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,9 +28,13 @@ CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
 async def list_models(user: User = Depends(get_current_user)):
     # `locked` is per-caller so the picker can grey out what this plan cannot use.
     may_use_premium = await user_allows_premium(user.id, user.role)
+    # `default` follows the user's Settings → AI provider choice, so the picker preselects a
+    # model from the provider they asked for. None (iema/auto) keeps the catalog's own flag.
+    pref_id = default_model_id(user.ai_provider)
     return {"items": [{
         "id": m["id"], "name": m["name"], "label": m["label"],
-        "description": m["description"], "default": m.get("default", False),
+        "description": m["description"],
+        "default": (m["id"] == pref_id) if pref_id else m.get("default", False),
         "premium": bool(m.get("premium")),
         "locked": bool(m.get("premium")) and not may_use_premium,
     } for m in MODEL_CATALOG]}
@@ -101,6 +105,65 @@ async def delete_conversation(conv_id: str, user: User = Depends(get_current_use
     await conversations_col.delete_one({"_id": ObjectId(conv_id), "user_id": user.id})
     await messages_col.delete_many({"conversation_id": conv_id})
     return {"ok": True}
+
+
+@router.post("/messages/{message_id}/flag")
+async def toggle_message_flag(message_id: str, user: User = Depends(get_current_user)):
+    """Toggle a personal bookmark on one of the user's own messages."""
+    try:
+        msg = await messages_col.find_one({"_id": ObjectId(message_id), "user_id": user.id})
+    except Exception:
+        raise HTTPException(400, "Invalid message id")
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    flagged = not msg.get("flagged", False)
+    await messages_col.update_one({"_id": msg["_id"]}, {"$set": {"flagged": flagged}})
+    return {"flagged": flagged}
+
+
+@router.get("/flagged")
+async def list_flagged(limit: int = 50, user: User = Depends(get_current_user)):
+    """The user's flagged prompts, newest first — backs the Flagged Prompts sidebar list.
+
+    ponytail: unindexed find on `messages`; add a {user_id, flagged} compound index if the
+    collection grows enough for this to show up in profiling.
+    """
+    cursor = messages_col.find({"user_id": user.id, "flagged": True}).sort("created_at", -1).limit(min(limit, 200))
+    items = [{
+        "id": str(d["_id"]), "conversation_id": d.get("conversation_id"),
+        "role": d.get("role"), "content": d.get("content", ""),
+        "created_at": d.get("created_at"),
+    } async for d in cursor]
+    return {"items": items}
+
+
+@router.delete("/conversations/{conv_id}/messages/{message_id}")
+async def delete_from_message(conv_id: str, message_id: str, user: User = Depends(get_current_user)):
+    """Delete `message_id` and every message after it in the conversation.
+
+    Backs "edit prompt": the client truncates here, then re-sends the edited text through
+    /chat/stream, which appends a fresh exchange. That keeps editing on the normal send path,
+    so streaming, billing and history need no special cases.
+    """
+    try:
+        conv = await conversations_col.find_one({"_id": ObjectId(conv_id), "user_id": user.id})
+        msg = await messages_col.find_one({"_id": ObjectId(message_id), "conversation_id": conv_id})
+    except Exception:
+        raise HTTPException(400, "Invalid conversation or message id")
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if not msg:
+        raise HTTPException(404, "Message not found")
+
+    # created_at is an ISO-8601 UTC string with microseconds (db.now_iso), which sorts
+    # lexicographically the same way it sorts chronologically — the same ordering
+    # get_conversation already relies on.
+    result = await messages_col.delete_many({
+        "conversation_id": conv_id,
+        "created_at": {"$gte": msg["created_at"]},
+    })
+    await conversations_col.update_one({"_id": ObjectId(conv_id)}, {"$set": {"updated_at": now_iso()}})
+    return {"deleted": result.deleted_count}
 
 
 @router.post("/stream")
@@ -184,13 +247,20 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                 )
                 asst_res = await messages_col.insert_one(asst_msg.to_mongo())
                 # Central spend (window + wallet + provider tracking)
+                # Carry the post-charge balance out to the `saved` event below: this endpoint
+                # is consumed by raw fetch, so it bypasses the axios interceptor that keeps
+                # the wallet counter fresh everywhere else. Stays None if the spend is
+                # swallowed, and keeps the last good value if an image spend trips the window.
+                balance = None
                 try:
-                    await spend(user.id, "chat_message", provider_override=provider,
-                                description=f"Chat message ({model})", ref_id=conv_id)
+                    billing = await spend(user.id, "chat_message", provider_override=provider,
+                                          description=f"Chat message ({model})", ref_id=conv_id)
+                    balance = billing["balance"]
                     if image_count:
                         for _ in range(image_count):
-                            await spend(user.id, "chat_message_image", provider_override=provider,
-                                        description=f"Chat image ({model})", ref_id=conv_id)
+                            billing = await spend(user.id, "chat_message_image", provider_override=provider,
+                                                  description=f"Chat image ({model})", ref_id=conv_id)
+                            balance = billing["balance"]
                 except HTTPException:
                     # rate-limit — already deducted via primary msg; ignore silently for chat
                     pass
@@ -208,7 +278,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                     "credits_used": total_cost,
                     "created_at": now_iso(),
                 })
-                yield f"data: {json.dumps({'type': 'saved', 'assistant_message_id': str(asst_res.inserted_id), 'credits_used': total_cost})}\n\n"
+                yield f"data: {json.dumps({'type': 'saved', 'assistant_message_id': str(asst_res.inserted_id), 'credits_used': total_cost, 'balance': balance})}\n\n"
         except Exception as e:
             logger.exception("Chat stream error")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -328,7 +398,7 @@ async def send_message(
 
     result = await messages_col.insert_one(assistant.to_mongo())
 
-    await spend(
+    billing = await spend(
         user.id,
         "chat_message",
         provider_override=provider,
@@ -338,7 +408,7 @@ async def send_message(
 
     if image_count:
         for _ in range(image_count):
-            await spend(
+            billing = await spend(
                 user.id,
                 "chat_message_image",
                 provider_override=provider,
@@ -375,4 +445,5 @@ async def send_message(
         "provider": provider,
         "model": model,
         "credits_used": total_cost,
+        "balance": billing["balance"],
     }

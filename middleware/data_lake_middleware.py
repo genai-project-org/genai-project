@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Skip paths that add noise / SSE / uploads
 SKIP_PATHS = {"/api/", "/api/health", "/api/webhook/stripe"}
-SKIP_PREFIXES = ("/api/uploads",)
+SKIP_PREFIXES = ("/api/uploads", "/api/resume")
 
 # We never persist full response bodies for streaming or large payloads.
 MAX_BODY_CAPTURE = 2000  # bytes
