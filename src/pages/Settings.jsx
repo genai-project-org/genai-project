@@ -10,7 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Sparkles, Zap, Cpu } from 'lucide-react';
 import { toast } from 'sonner';
 import { setTheme } from '@/store/slices/uiSlice';
-import { logout, setAuth } from '@/store/slices/authSlice';
+import { logout, setUser } from '@/store/slices/authSlice';
 import { cn } from '@/lib/utils';
 
 const AI_PROVIDERS = [
@@ -36,7 +36,10 @@ export default function Settings() {
     setProvider(p); setSavingProv(true);
     try {
       const { data } = await api.patch('/auth/me', { ai_provider: p });
-      dispatch(setAuth({ user: data }));
+      // setUser, not setAuth: setAuth expects a full {user, tokens} login payload and throws
+      // on payload.tokens.access_token, which surfaced here as a bogus "Failed" toast even
+      // though the PATCH returned 200.
+      dispatch(setUser(data));
       toast.success('AI preference saved');
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed');
