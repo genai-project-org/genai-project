@@ -25,6 +25,7 @@ import Studio from '@/pages/Studio';
 import Career from '@/pages/Career';
 import Builder from '@/pages/Builder';
 import Counseling from '@/pages/Counseling';
+import Resume from '@/pages/Resume';
 
 function App() {
   return (
@@ -47,7 +48,7 @@ function App() {
               <Route path="/chat" element={<Chat />} />
               <Route path="/studio" element={<Studio />} />
               <Route path="/career" element={<Career />} />
-              <Route path="/career/:tab" element={<Career />} />
+              <Route path="/resume" element={<Resume />} />
               <Route path="/builder" element={<Builder kind="static" />} />
               <Route path="/builder/dynamic" element={<Builder kind="react" />} />
               <Route path="/counseling" element={<Counseling />} />

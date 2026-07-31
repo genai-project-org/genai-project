@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useDispatch } from 'react-redux';
 import api from '@/lib/api';
-import { setWalletBalance } from '@/store/slices/uiSlice';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Loader2, Heart, Briefcase, GraduationCap, Send, Volume2, Square, Clock, Trash2 } from 'lucide-react';
@@ -24,7 +22,6 @@ export default function Counseling() {
   const [speakingIdx, setSpeakingIdx] = useState(null);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
-  const dispatch = useDispatch();
   const scrollRef = useRef(null);
   const pendingRestore = useRef(null);
   const activeMode = MODES.find(m => m.key === mode);
@@ -84,7 +81,7 @@ export default function Counseling() {
     setMessages(prev => [...prev, userMsg]); setInput(''); setLoading(true);
     try {
       const { data } = await api.post('/counseling', { mode, message: text });
-      if (data.balance != null) dispatch(setWalletBalance(data.balance));
+      // wallet counter is updated by the response interceptor in lib/api.js
       setMessages(prev => [...prev, {
         role: 'assistant', text: data.response, source: data.source,
         score: data.score, disclaimer: data.disclaimer, credits: data.credits_used,

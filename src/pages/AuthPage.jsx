@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Sparkles, Loader2, Apple as AppleIcon, Github, Linkedin } from 'lucide-react';
+import { Sparkles, Loader2, Apple as AppleIcon, Github, Linkedin, Eye, EyeOff } from 'lucide-react';
 import { AUTH } from '@/constants/testIds';
 
 const GSI_SRC = 'https://accounts.google.com/gsi/client';
@@ -17,6 +17,7 @@ export default function AuthPage({ mode }) {
   const isRegister = mode === 'register';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [oauthCfg, setOauthCfg] = useState({ google: {}, apple: {}, github: {}, linkedin: {} });
@@ -236,7 +237,28 @@ export default function AuthPage({ mode }) {
                   <Link to="/forgot-password" className="text-xs text-muted-foreground hover:text-primary" data-testid="auth-forgot-link">Forgot?</Link>
                 )}
               </div>
-              <Input id="password" data-testid={AUTH.passwordInput} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} placeholder="••••••••" />
+              <div className="relative">
+                <Input
+                  id="password"
+                  data-testid={AUTH.passwordInput}
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  placeholder="••••••••"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  data-testid="auth-password-toggle"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
             <Button type="submit" className="w-full" disabled={loading} data-testid={AUTH.submitBtn}>
               {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

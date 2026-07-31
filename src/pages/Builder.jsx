@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useDispatch } from 'react-redux';
 import api from '@/lib/api';
-import { setWalletBalance } from '@/store/slices/uiSlice';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -44,7 +42,6 @@ export default function Builder({ kind = 'static' }) {
   const [shareUrl, setShareUrl] = useState('');
   const [shareCopied, setShareCopied] = useState(false);
   const [ghConnected, setGhConnected] = useState(false);
-  const dispatch = useDispatch();
   const previewRef = useRef(null);
 
   const load = async () => {
@@ -112,7 +109,7 @@ export default function Builder({ kind = 'static' }) {
       const { data } = await api.post(`/builder/projects/${active.id}/refine`, { instruction: refineText });
       const updated = { ...active, files: data.files };
       setActive(updated); setActiveFileIdx(0);
-      dispatch(setWalletBalance(data.balance));
+      // wallet counter is updated by the response interceptor in lib/api.js
       toast.success('Refined');
       await refreshPreview(updated);
       setRefineText('');
@@ -276,13 +273,13 @@ export default function Builder({ kind = 'static' }) {
       )}
 
       <CreateDialog open={showCreate} onOpenChange={setShowCreate} kind={kind} copy={copy}
-                    onCreated={async (p) => { await load(); openProject(p.id); }} dispatch={dispatch} />
+                    onCreated={async (p) => { await load(); openProject(p.id); }} />
       <GithubDialog open={showGithub} onOpenChange={setShowGithub} project={active} connected={ghConnected} onDone={() => { loadGh(); }} />
     </div>
   );
 }
 
-function CreateDialog({ open, onOpenChange, onCreated, dispatch, kind = 'static', copy = COPY.static }) {
+function CreateDialog({ open, onOpenChange, onCreated, kind = 'static', copy = COPY.static }) {
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const submit = async () => {
@@ -290,7 +287,7 @@ function CreateDialog({ open, onOpenChange, onCreated, dispatch, kind = 'static'
     setLoading(true);
     try {
       const { data } = await api.post('/builder/projects', { prompt, kind });
-      if (data.balance != null) dispatch(setWalletBalance(data.balance));
+      // wallet counter is updated by the response interceptor in lib/api.js
       toast.success('Ready');
       onOpenChange(false); setPrompt('');
       onCreated(data.project);

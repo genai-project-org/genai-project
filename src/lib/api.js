@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { store } from '@/store/store';
 import { logout, setTokens } from '@/store/slices/authSlice';
+import { setWalletBalance } from '@/store/slices/uiSlice';
 
 // Set REACT_APP_BACKEND_URL in .env to point at a local backend; falls back to prod.
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -18,7 +19,15 @@ api.interceptors.request.use((config) => {
 let refreshing = null;
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    // Every credit-charging endpoint returns the post-charge wallet total, so keep the
+    // sidebar counter honest here instead of asking each page to remember. New endpoints
+    // are covered for free.
+    // typeof number, not != null: spend() returns balance: None on a free/KB-cached hit,
+    // and Sidebar hides the whole widget when walletBalance === null.
+    if (typeof r.data?.balance === 'number') store.dispatch(setWalletBalance(r.data.balance));
+    return r;
+  },
   async (error) => {
     // FastAPI returns structured detail objects for 429/402 (window/credit limits).
     // Callers do toast.error(data.detail) assuming a string — flatten to avoid

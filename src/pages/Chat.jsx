@@ -222,8 +222,8 @@ export default function Chat() {
             } else if (obj.type === 'warn') {
               toast.info(obj.message);
             } else if (obj.type === 'saved') {
-              // Refresh wallet
-              api.get('/wallet/').then((r) => dispatch(setWalletBalance(r.data.total)));
+              // The stream carries the new balance, so no extra GET /wallet/ round-trip.
+              if (typeof obj.balance === 'number') dispatch(setWalletBalance(obj.balance));
             }
           } catch { }
         }
