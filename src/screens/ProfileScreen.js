@@ -17,6 +17,13 @@ export default function ProfileScreen({ navigation }) {
   const [code, setCode] = useState('');
   const [showVerify, setShowVerify] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [linkedProviders, setLinkedProviders] = useState([]);
+
+  useEffect(() => {
+    api.get('/auth/me/linked')
+      .then(({ data }) => setLinkedProviders((data.linked || []).map((l) => l.provider)))
+      .catch(() => {});
+  }, []);
 
   const save = async () => {
     setSaving(true);
@@ -93,17 +100,21 @@ export default function ProfileScreen({ navigation }) {
         <Card>
           <Text style={{ color: colors.text, fontSize: fontSize.lg, fontWeight: '600', marginBottom: 8 }}>Connected accounts</Text>
           {[
-            { p: 'Google', connected: user?.provider === 'google' },
-            { p: 'Microsoft', connected: user?.provider === 'microsoft' },
-            { p: 'Apple', connected: false },
-          ].map(({ p, connected }) => (
+            { p: 'Google', key: 'google' },
+            { p: 'Apple', key: 'apple' },
+            { p: 'GitHub', key: 'github' },
+            { p: 'LinkedIn', key: 'linkedin' },
+          ].map(({ p, key }) => {
+            const connected = linkedProviders.includes(key);
+            return (
             <View key={p} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10, borderBottomWidth: 1, borderColor: colors.border + '80' }}>
               <Text style={{ color: colors.text, fontSize: fontSize.sm }}>{p}</Text>
               <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, borderWidth: 1, borderColor: connected ? colors.success : colors.border }}>
                 <Text style={{ color: connected ? colors.success : colors.textDim, fontSize: 11 }}>{connected ? 'Connected' : 'Not connected'}</Text>
               </View>
             </View>
-          ))}
+            );
+          })}
         </Card>
       </ScrollView>
     </View>

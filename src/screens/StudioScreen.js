@@ -405,7 +405,11 @@ function VideoGen() {
         <Card>
           <Text style={{ color: colors.text, fontSize: fontSize.md, fontWeight: '600' }}>Video ready</Text>
           <Text style={{ color: colors.textMuted, fontSize: fontSize.sm, marginTop: 4 }}>
-            {state.result.model} · {state.result.duration}s · {state.result.size}
+            {[
+              state.result.model,
+              state.result.duration ? `${state.result.duration}s` : null,
+              state.result.size,
+            ].filter(Boolean).join(' · ')}
           </Text>
           <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.md }}>
             <Button title="Open"

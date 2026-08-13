@@ -26,6 +26,7 @@ import { initRevenueCat } from '../services/revenuecat';
  */
 export default function BillingScreen({ navigation }) {
   const userId = useSelector((s) => s.auth.user?.id);
+  const userPlan = useSelector((s) => s.auth.user?.plan) || 'free';
   const [packs, setPacks] = useState([]);
   const [plans, setPlans] = useState([]);
   const [iapProducts, setIapProducts] = useState([]);
@@ -187,20 +188,33 @@ export default function BillingScreen({ navigation }) {
 
         {plans.length > 0 && (
           <>
-            <Text style={{ color: colors.text, fontSize: fontSize.lg, fontWeight: '600', marginTop: 8 }}>
-              Recurring plans
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+              <Text style={{ color: colors.text, fontSize: fontSize.lg, fontWeight: '600' }}>
+                Recurring plans
+              </Text>
+              <Text style={{ color: colors.textMuted, fontSize: fontSize.sm }}>
+                Current: <Text style={{ color: colors.primary, fontWeight: '600' }}>
+                  {plans.find((p) => p.plan_id === userPlan)?.name || 'Free'}
+                </Text>
+              </Text>
+            </View>
             {plans.map((p) => {
+              const isCurrent = p.plan_id === userPlan;
               const sku = Object.entries(PRODUCT_TO_PLAN).find(([, id]) => id === p.plan_id)?.[0];
-              const storeProduct = iapProducts.find((sp) => sp.productId === sku);
+              const storeProduct = iapProducts.find((sp) => sp.id === sku || sp.productId === sku);
               const priceLabel = storeProduct
-                ? (storeProduct.localizedPrice
-                    || storeProduct.subscriptionOfferDetails?.[0]?.pricingPhases
+                ? (storeProduct.displayPrice
+                    || storeProduct.subscriptionOfferDetailsAndroid?.[0]?.pricingPhases
                         ?.pricingPhaseList?.[0]?.formattedPrice
                     || `$${p.price_usd}`)
                 : `$${p.price_usd}`;
               return (
-                <View key={p.plan_id} style={cardStyle(false)}>
+                <View key={p.plan_id} style={cardStyle(isCurrent)}>
+                  {isCurrent && (
+                    <View style={{ position: 'absolute', top: -10, right: 14, backgroundColor: colors.primary, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 }}>
+                      <Text style={{ color: '#fff', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, fontWeight: '600' }}>Current plan</Text>
+                    </View>
+                  )}
                   <Text style={labelStyle}>{(p.billing_period || 'monthly').toUpperCase()}</Text>
                   <Text style={{ color: colors.text, fontSize: fontSize.lg, fontWeight: '600', marginTop: 2 }}>
                     {p.name}
@@ -216,10 +230,14 @@ export default function BillingScreen({ navigation }) {
                     <Row text={`${p.window_credits} credits per ${p.window_hours}h window`} />
                     <Row text="All AI modules" />
                   </View>
-                  <Button title={buying === p.plan_id ? 'Purchasing\u2026' : `Subscribe`}
-                          loading={buying === p.plan_id}
-                          onPress={() => subscribeIap(p)}
-                          style={{ marginTop: spacing.lg }} />
+                  {isCurrent ? (
+                    <Button title="Current Plan" disabled style={{ marginTop: spacing.lg }} />
+                  ) : (
+                    <Button title={buying === p.plan_id ? 'Purchasing\u2026' : `Subscribe`}
+                            loading={buying === p.plan_id}
+                            onPress={() => subscribeIap(p)}
+                            style={{ marginTop: spacing.lg }} />
+                  )}
                 </View>
               );
             })}

@@ -259,9 +259,9 @@ export default function ChatScreen({ navigation, route }) {
         message = e.message;
       }
 
-      setOut(`⚠️ ${message}`);
+      Alert.alert("Chat error", message);
     } finally {
-      setLoading(false);
+      setStreaming(false);
     }
   };
 
