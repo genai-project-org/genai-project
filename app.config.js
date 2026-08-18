@@ -2,7 +2,7 @@ export default {
   expo: {
     name: "IEMA.ai",
     slug: "iema-ai",
-    version: "3.0.0",
+    version: "3.1.0",
     orientation: "portrait",
     icon: "./assets/logo.png",
     userInterfaceStyle: "automatic",
@@ -19,7 +19,10 @@ export default {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.iemaai.app",
-      buildNumber: "28",
+      // buildNumber intentionally omitted — appVersionSource: "remote" in
+      // eas.json means EAS tracks and auto-increments this on its own
+      // servers; a local value here is ignored and only invites drift
+      // (this used to say "28" while EAS was already at 58).
       usesAppleSignIn: true,
       infoPlist: {
         NSPhotoLibraryUsageDescription: "IEMA.ai needs access to your photos to attach images to your chats.",
@@ -29,7 +32,9 @@ export default {
     },
     android: {
       package: "com.iemaai.app",
-      versionCode: 1,
+      // versionCode intentionally omitted — see the buildNumber comment
+      // under `ios` above; same remote-versioning story (EAS was already
+      // at 37 while this said "1").
       adaptiveIcon: {
         foregroundImage: "./assets/logo.png",
         backgroundColor: "#3b82f6"

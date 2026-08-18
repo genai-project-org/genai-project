@@ -179,15 +179,43 @@ export default function SocialAuthButtons() {
     console.log("Auth URL:", authUrl);
     console.log("Return URL:", "iemaai://auth");
     console.log("================================");
-    const res = await WebBrowser.openAuthSessionAsync(authUrl, "iemaai://auth");
+    // preferEphemeralSession (iOS only, no-op elsewhere): without it,
+    // ASWebAuthenticationSession shares Safari's cookie jar/cache across
+    // invocations, so a log-out-then-log-back-in re-uses stale session state
+    // from the first attempt — the classic "works once, breaks on retry,
+    // iOS-only" OAuth bug.
+    const res = await WebBrowser.openAuthSessionAsync(authUrl, "iemaai://auth", {
+      preferEphemeralSession: true,
+    });
     if (res.type !== "success" || !res.url) return null;
+    if (__DEV__) console.log("OAuth callback URL:", res.url);
     // Returning URL is `iemaai://auth?access_token=…&refresh_token=…&user=…`
-    const q = res.url.split("?")[1] || "";
-    const params = Object.fromEntries(new URLSearchParams(q).entries());
+    // — on Android the Custom Tab hands it back with the payload after `?`,
+    // but iOS has been observed handing the same payload back after a `#`
+    // instead. Parse the `?query` and `#fragment` parts separately (a naive
+    // split on "whichever comes first" would wrongly swallow a real query
+    // string if a `#` also appears later, e.g. inside an unencoded value)
+    // and merge both param sets, so either shape resolves the same way.
+    const [, queryPart = "", fragPart = ""] =
+      res.url.match(/^[^?#]*(?:\?([^#]*))?(?:#(.*))?$/) || [];
+    const params = Object.fromEntries([
+      ...new URLSearchParams(queryPart),
+      ...new URLSearchParams(fragPart),
+    ]);
     if (params.error) throw new Error(params.error);
     if (!params.access_token) throw new Error("No token returned");
+    let user = null;
+    if (params.user) {
+      try {
+        user = JSON.parse(params.user);
+      } catch {
+        // Malformed/partial `user` payload shouldn't block sign-in — the
+        // tokens are what actually matter, the profile can hydrate later.
+        user = null;
+      }
+    }
     return {
-      user: params.user ? JSON.parse(params.user) : null,
+      user,
       tokens: {
         access_token: params.access_token,
         refresh_token: params.refresh_token,
