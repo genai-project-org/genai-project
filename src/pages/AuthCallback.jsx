@@ -25,6 +25,7 @@ export default function AuthCallback() {
   const dispatch = useDispatch();
   const [error, setError] = useState(null);
   const [status, setStatus] = useState('Signing you in…');
+  const [deepLink, setDeepLink] = useState(null);
   const exchangedRef = useRef(false);
 
   useEffect(() => {
@@ -55,7 +56,16 @@ export default function AuthCallback() {
             refresh_token: data.tokens.refresh_token,
             user: JSON.stringify(data.user || {}),
           }).toString();
-          window.location.replace(`${appScheme}://auth?${search}`);
+          const link = `${appScheme}://auth?${search}`;
+          // Best-effort automatic redirect (works on Android/Chrome). iOS's
+          // WKWebView/ASWebAuthenticationSession blocks script-initiated
+          // navigation to a custom URL scheme once the page's transient user
+          // activation has expired (which it always has by the time this
+          // async callback runs) — silently swallowing the redirect. So we
+          // also surface a real `<a href>` below: a genuine tap always
+          // carries user activation, making it the reliable fallback there.
+          setDeepLink(link);
+          window.location.replace(link);
           return;
         }
         dispatch(setAuth(data));
@@ -66,7 +76,9 @@ export default function AuthCallback() {
         setError(detail);
         toast.error(detail);
         if (isMobile) {
-          setTimeout(() => window.location.replace(`${appScheme}://auth?error=${encodeURIComponent(detail)}`), 1200);
+          const errLink = `${appScheme}://auth?error=${encodeURIComponent(detail)}`;
+          setDeepLink(errLink);
+          setTimeout(() => window.location.replace(errLink), 1200);
         } else {
           setTimeout(() => navigate('/login'), 2000);
         }
@@ -87,6 +99,17 @@ export default function AuthCallback() {
         </>
       ) : (
         <p className="text-destructive text-sm">{error}</p>
+      )}
+      {deepLink && (
+        // Real anchor click = guaranteed user activation, so this is the
+        // reliable way back into the app when the automatic redirect above
+        // is silently blocked (iOS Safari/WKWebView).
+        <a
+          href={deepLink}
+          className="mt-6 text-sm text-primary underline underline-offset-4"
+        >
+          Tap here to return to the app
+        </a>
       )}
     </div>
   );
