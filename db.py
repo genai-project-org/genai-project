@@ -76,6 +76,7 @@ ai_requests_col = db["ai_requests"]
 settings_col = db["settings"]
 audit_logs_col = db["audit_logs"]
 counseling_history_col = db["counseling_history"]
+content_reports_col = db["content_reports"]
 
 
 async def ensure_indexes():
@@ -91,3 +92,5 @@ async def ensure_indexes():
     await notifications_col.create_index([("user_id", 1), ("created_at", -1)])
     await ai_requests_col.create_index([("user_id", 1), ("created_at", -1)])
     await counseling_history_col.create_index([("user_id", 1), ("created_at", -1)])
+    await content_reports_col.create_index([("status", 1), ("created_at", -1)])
+    await content_reports_col.create_index([("user_id", 1), ("created_at", -1)])

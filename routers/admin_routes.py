@@ -6,9 +6,10 @@ from bson import ObjectId
 from auth import require_admin
 from db import (
     users_col, wallets_col, payment_transactions_col, transactions_col,
-    ai_requests_col, conversations_col, messages_col, credit_packs_col, now_iso
+    ai_requests_col, conversations_col, messages_col, credit_packs_col, now_iso,
+    content_reports_col,
 )
-from models import User, AdminUpdateWalletRequest
+from models import User, AdminUpdateWalletRequest, ReportStatusUpdateRequest
 from services.credit_service import add_credits, get_or_create_wallet
 from services.notification_service import notify
 
@@ -327,6 +328,39 @@ async def query_log(
         items.append(d)
     total = await events_col.count_documents(filt)
     return {"items": items, "total": total, "limit": limit, "skip": skip}
+
+
+@router.get("/reports")
+async def list_content_reports(
+    status: Optional[str] = None,
+    limit: int = 50, skip: int = 0,
+    admin: User = Depends(require_admin),
+):
+    """User-submitted flags of offensive AI-generated content — feeds
+    moderation per Google Play's AI-Generated Content policy."""
+    filt: dict = {}
+    if status:
+        filt["status"] = status
+    cursor = content_reports_col.find(filt).sort("created_at", -1).skip(skip).limit(min(limit, 200))
+    items = []
+    async for d in cursor:
+        d["id"] = str(d.pop("_id"))
+        items.append(d)
+    total = await content_reports_col.count_documents(filt)
+    open_count = await content_reports_col.count_documents({"status": "open"})
+    return {"items": items, "total": total, "open_count": open_count, "limit": limit, "skip": skip}
+
+
+@router.patch("/reports/{report_id}")
+async def update_content_report(report_id: str, req: ReportStatusUpdateRequest, admin: User = Depends(require_admin)):
+    try:
+        oid = ObjectId(report_id)
+    except Exception:
+        raise HTTPException(400, "Invalid report id")
+    result = await content_reports_col.update_one({"_id": oid}, {"$set": {"status": req.status}})
+    if result.matched_count == 0:
+        raise HTTPException(404, "Report not found")
+    return {"ok": True, "status": req.status}
 
 
 @router.get("/users/{user_id}/details")

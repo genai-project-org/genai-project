@@ -252,3 +252,28 @@ class UserUpdateRequest(BaseModel):
     theme: Optional[str] = None
     avatar: Optional[str] = None
     ai_provider: Optional[str] = None
+
+
+# ================= CONTENT REPORTS =================
+# Backs the in-app "Report" / "Flag" feature required by Google Play's
+# AI-Generated Content policy: users must be able to flag offensive AI
+# output without leaving the app, and those flags must feed moderation.
+class ContentReport(BaseDocument):
+    user_id: str
+    content_type: str  # studio_image | studio_video | studio_summarize | chat | career | builder | counseling | other
+    content_ref: Optional[str] = None  # url or id of the reported content
+    content_preview: Optional[str] = None  # short excerpt/prompt for moderator context
+    reason: str = "inappropriate_or_offensive"
+    status: Literal["open", "reviewed", "dismissed"] = "open"
+    created_at: str = Field(default_factory=lambda: now_utc().isoformat())
+
+
+class ReportContentRequest(BaseModel):
+    content_type: str = Field(min_length=1, max_length=40)
+    content_ref: Optional[str] = Field(default=None, max_length=2048)
+    content_preview: Optional[str] = Field(default=None, max_length=500)
+    reason: Optional[str] = Field(default="inappropriate_or_offensive", max_length=100)
+
+
+class ReportStatusUpdateRequest(BaseModel):
+    status: Literal["open", "reviewed", "dismissed"]
