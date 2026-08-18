@@ -3,8 +3,11 @@ import { View, Text, ScrollView, Image, TouchableOpacity, Alert, Linking, Activi
 import { useFocusEffect } from '@react-navigation/native';
 import { ChevronDown, Check, Sparkles, ImageIcon, FileText, Video as VideoIcon, Download, Link as LinkIcon, History as HistoryIcon, Loader2 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import api from '../api';
 import ScreenHeader from '../components/ScreenHeader';
+import ReportButton from '../components/ReportButton';
 import { Card, Button, Input, Label } from '../components/UI';
 import { colors, spacing, fontSize, radii } from '../theme';
 import { studioStore, useStudioStore } from '../services/studioStore';
@@ -15,6 +18,25 @@ import { studioStore, useStudioStore } from '../services/studioStore';
  * user switches tabs, backgrounds the app, or drops the screen. We also
  * block launching a second generation until the first one finishes.
  */
+
+// Downloads the remote asset into the app's cache dir and hands it to the
+// native share sheet — avoids the media-library permissions this app
+// deliberately blocks (see app.config.js), since Sharing uses a content://
+// FileProvider URI rather than writing to the shared gallery.
+async function saveOrShare(url, filename) {
+  try {
+    const localUri = FileSystem.cacheDirectory + filename;
+    const { uri } = await FileSystem.downloadAsync(url, localUri);
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(uri);
+    } else {
+      await Linking.openURL(url);
+    }
+  } catch (e) {
+    Alert.alert('Save / Share failed', 'Could not prepare this file for sharing. Please try again.');
+  }
+}
+
 export default function StudioScreen({ navigation }) {
   const [tab, setTab] = useState('sum');
   // Drawer navigation keeps screens mounted, so we use `useFocusEffect`
@@ -205,7 +227,10 @@ function Summarize() {
 
       {state.status === 'running' && <SkeletonBlock lines={4} />}
       {state.status === 'done' && state.result && (
-        <Card><Text style={{ color: colors.text, fontSize: fontSize.sm, lineHeight: 20 }}>{state.result}</Text></Card>
+        <Card>
+          <Text style={{ color: colors.text, fontSize: fontSize.sm, lineHeight: 20 }}>{state.result}</Text>
+          <ReportButton contentType="studio_summarize" contentPreview={state.result} />
+        </Card>
       )}
       {state.status === 'error' && (
         <Card><Text style={{ color: '#ef4444', fontSize: fontSize.sm }}>{state.error}</Text></Card>
@@ -296,7 +321,10 @@ function ImageGen() {
           <View style={{ padding: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <Text style={{ color: colors.textDim, fontSize: fontSize.xs }}>GPT Image 1</Text>
             <Button title="Save / share"
-                      onPress={() => Linking.openURL(im.url)} testID={`image-save-${i}`} />
+                      onPress={() => saveOrShare(im.url, `iema-studio-${Date.now()}-${i}.png`)} testID={`image-save-${i}`} />
+          </View>
+          <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+            <ReportButton contentType="studio_image" contentRef={im.url} contentPreview={prompt} />
           </View>
         </Card>
       ))}
@@ -416,9 +444,10 @@ function VideoGen() {
                     onPress={() => Linking.openURL(state.result.url)} style={{ flex: 1 }} />
             <Button title="Save / share"
                     variant="outline"
-                    onPress={() => Linking.openURL(state.result.url)} style={{ flex: 1 }}
+                    onPress={() => saveOrShare(state.result.url, `iema-studio-${Date.now()}.mp4`)} style={{ flex: 1 }}
                     testID="studio-video-save-btn" />
           </View>
+          <ReportButton contentType="studio_video" contentRef={state.result.url} contentPreview={prompt} />
         </Card>
       )}
       {state.status === 'error' && (

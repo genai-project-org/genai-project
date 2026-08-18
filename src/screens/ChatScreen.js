@@ -748,7 +748,7 @@ function MessageBubble({ message }) {
             >
               {message.model}
             </Text>
-            <ReportButton />
+            <ReportButton contentType="chat" contentRef={message.id} contentPreview={message.content} />
           </>
         )}
       </View>

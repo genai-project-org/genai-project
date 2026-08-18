@@ -223,7 +223,7 @@ export default function CounselingScreen({ navigation }) {
                   )}
                 </View>
 
-                <ReportButton />
+                <ReportButton contentType="counseling" contentPreview={m.text} />
               </>
             )}
             {m.disclaimer && (

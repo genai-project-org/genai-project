@@ -270,7 +270,7 @@ function Path() {
           >
             {out}
           </Text>
-          <ReportButton />
+          <ReportButton contentType="career" contentPreview={out} />
         </Card>
       ) : null}
     </>

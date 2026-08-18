@@ -271,7 +271,7 @@ export default function BuilderScreen({ navigation }) {
             ))
           )}
           <Card>
-            <ReportButton />
+            <ReportButton contentType="builder" contentRef={active.id} contentPreview={active.description} />
           </Card>
         </ScrollView>
       </View>
