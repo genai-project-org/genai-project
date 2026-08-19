@@ -50,6 +50,16 @@ export default function SocialAuthButtons() {
     github: {},
     linkedin: {},
   });
+  // Native Sign in with Apple (AuthenticationServices) is iOS-only — Apple's
+  // guidelines require using this native flow there, not a web OAuth
+  // redirect. Android has no such native module, so it keeps using the web
+  // bridge below, which is fine since Apple's App Store rules don't govern
+  // the Play build.
+  const [appleNativeAvailable, setAppleNativeAvailable] = useState(false);
+
+  useEffect(() => {
+    AppleAuthentication.isAvailableAsync().then(setAppleNativeAvailable);
+  }, []);
 
   useEffect(() => {
     const loadOAuthConfig = async () => {
@@ -320,14 +330,28 @@ export default function SocialAuthButtons() {
           </Text>
         )}
       </TouchableOpacity>
+      {appleNativeAvailable && oauthCfg.apple?.enabled && (
+        // Apple's own official button component — required styling/prominence
+        // per Apple HIG, wired to the native AuthenticationServices flow
+        // (`signInApple`), not the web OAuth bridge used by the others.
+        <AppleAuthentication.AppleAuthenticationButton
+          testID="social-apple"
+          buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+          buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+          cornerRadius={radii.md}
+          style={{ height: 46, opacity: loading !== null ? 0.5 : 1 }}
+          onPress={signInApple}
+        />
+      )}
       <View style={{ flexDirection: "row", gap: spacing.sm }}>
-        {chip(
-          "Apple",
-          () => webBridge("apple").then((d) => d && finish(d)),
-          "apple",
-          "social-apple",
-          !oauthCfg.apple?.enabled
-        )}
+        {!appleNativeAvailable &&
+          chip(
+            "Apple",
+            () => webBridge("apple").then((d) => d && finish(d)),
+            "apple",
+            "social-apple",
+            !oauthCfg.apple?.enabled
+          )}
         {chip(
           "GitHub",
           signInGithub,

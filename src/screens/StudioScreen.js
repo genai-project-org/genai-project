@@ -23,12 +23,24 @@ import { studioStore, useStudioStore } from '../services/studioStore';
 // native share sheet — avoids the media-library permissions this app
 // deliberately blocks (see app.config.js), since Sharing uses a content://
 // FileProvider URI rather than writing to the shared gallery.
-async function saveOrShare(url, filename) {
+//
+// The filename is derived from the URL's own path segment (S3 keys are
+// already unique per generated asset) rather than a timestamp, so tapping
+// "Save / share" again on the same image/video reuses the cached download
+// instead of re-fetching it — the perceptible "lag" users hit is entirely
+// this network download, so skipping repeat ones is the only real lever we
+// have (there's no way to hand the share sheet a remote URL directly; it
+// needs actual local file bytes).
+async function saveOrShare(url) {
+  const filename = decodeURIComponent(url.split('?')[0].split('/').pop() || `iema-studio-${Date.now()}`);
+  const localUri = FileSystem.cacheDirectory + filename;
   try {
-    const localUri = FileSystem.cacheDirectory + filename;
-    const { uri } = await FileSystem.downloadAsync(url, localUri);
+    const info = await FileSystem.getInfoAsync(localUri);
+    if (!info.exists) {
+      await FileSystem.downloadAsync(url, localUri);
+    }
     if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(uri);
+      await Sharing.shareAsync(localUri);
     } else {
       await Linking.openURL(url);
     }
@@ -246,9 +258,16 @@ function ImageGen() {
   const [style, setStyle] = useState(state.style || 'realistic');
   const [aspect, setAspect] = useState(state.aspect || 'square');
   const [quality, setQuality] = useState(state.quality || 'low');
+  const [savingIdx, setSavingIdx] = useState(null);
 
   const busy = state.status === 'running';
   const otherBusy = studioStore.anyRunning() && !busy;
+
+  const handleSave = async (imUrl, i) => {
+    setSavingIdx(i);
+    await saveOrShare(imUrl);
+    setSavingIdx(null);
+  };
 
   const run = async () => {
     if (studioStore.anyRunning()) return;
@@ -320,8 +339,10 @@ function ImageGen() {
           <Image source={{ uri: im.url }} style={{ width: '100%', aspectRatio: 1 }} resizeMode="cover" />
           <View style={{ padding: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <Text style={{ color: colors.textDim, fontSize: fontSize.xs }}>GPT Image 1</Text>
-            <Button title="Save / share"
-                      onPress={() => saveOrShare(im.url, `iema-studio-${Date.now()}-${i}.png`)} testID={`image-save-${i}`} />
+            <Button title={savingIdx === i ? 'Preparing…' : 'Save / share'}
+                      loading={savingIdx === i}
+                      disabled={savingIdx !== null}
+                      onPress={() => handleSave(im.url, i)} testID={`image-save-${i}`} />
           </View>
           <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
             <ReportButton contentType="studio_image" contentRef={im.url} contentPreview={prompt} />
@@ -344,9 +365,16 @@ function VideoGen() {
   const [model, setModel] = useState(state.model || 'veo-fast');
   const [aspect, setAspect] = useState(state.aspect || '16:9');
   const [duration, setDuration] = useState(state.duration || 4);
+  const [saving, setSaving] = useState(false);
 
   const busy = state.status === 'running';
   const otherBusy = studioStore.anyRunning() && !busy;
+
+  const handleSave = async (videoUrl) => {
+    setSaving(true);
+    await saveOrShare(videoUrl);
+    setSaving(false);
+  };
 
   const run = async () => {
     if (studioStore.anyRunning()) return;
@@ -442,9 +470,11 @@ function VideoGen() {
           <View style={{ flexDirection: 'row', gap: 8, marginTop: spacing.md }}>
             <Button title="Open"
                     onPress={() => Linking.openURL(state.result.url)} style={{ flex: 1 }} />
-            <Button title="Save / share"
+            <Button title={saving ? 'Preparing…' : 'Save / share'}
                     variant="outline"
-                    onPress={() => saveOrShare(state.result.url, `iema-studio-${Date.now()}.mp4`)} style={{ flex: 1 }}
+                    loading={saving}
+                    disabled={saving}
+                    onPress={() => handleSave(state.result.url)} style={{ flex: 1 }}
                     testID="studio-video-save-btn" />
           </View>
           <ReportButton contentType="studio_video" contentRef={state.result.url} contentPreview={prompt} />
