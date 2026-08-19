@@ -1,10 +1,15 @@
 """AI Studio — text summarization, image generation & Google Veo 3.1 video generation."""
 import os
+import io
+import asyncio
+import shutil
+import subprocess
 import logging
 import time
 import uuid
 from pathlib import Path
 from typing import List, Optional
+from PIL import Image, ImageDraw, ImageFont
 from services.llm_client import LlmChat, UserMessage, OpenAIImageGeneration
 from google import genai
 from google.genai import types as genai_types
@@ -15,6 +20,101 @@ from services.provider_selector import pick_provider
 from services.ai_service import resolve_provider_model
 
 logger = logging.getLogger(__name__)
+
+
+# ================= REAL-PERSON IMPERSONATION GUARDRAIL =================
+# App Store / Play Store Restricted Content policies require apps not use AI
+# to generate deceptive content or impersonate real people. The image/video
+# vendors (OpenAI, Veo) apply their own moderation, but that's inconsistent
+# across providers/versions — this is a first-party check we control.
+IMPERSONATION_SYSTEM = (
+    "You are a safety classifier for an AI image/video generator. Decide "
+    "whether the prompt asks for a realistic depiction of a SPECIFIC named or "
+    "otherwise clearly identifiable real person (a public figure, celebrity, "
+    "politician, or private individual named or described uniquely enough to "
+    "identify them) — as opposed to a generic/anonymous person or a named "
+    "FICTIONAL character. Reply with exactly one word: BLOCK or ALLOW."
+)
+
+
+async def check_impersonation_risk(prompt: str) -> Optional[str]:
+    """Returns a user-facing block reason, or None if the prompt looks safe."""
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"studio-mod-{uuid.uuid4().hex[:8]}",
+        system_message=IMPERSONATION_SYSTEM,
+    ).with_model("openai", "gpt-5-nano")
+    try:
+        resp = await chat.send_message(UserMessage(text=prompt))
+        verdict = (resp if isinstance(resp, str) else getattr(resp, "content", str(resp))).strip().upper()
+        if verdict.startswith("BLOCK"):
+            return ("This prompt appears to request a realistic depiction of a specific "
+                    "real person, which isn't allowed. Try a generic or fictional "
+                    "description instead.")
+    except Exception:
+        logger.exception("Impersonation guardrail check failed; allowing by default")
+    return None
+
+
+# ================= AI-GENERATED CONTENT LABELING =================
+# Play/App Store guidance calls for AI-generated media to stay identifiable
+# once it leaves the app (export/share) — the in-app "GPT Image 1" badge
+# never survives a save/share, so the label needs to be burned into the
+# asset itself.
+_WATERMARK_LABEL = "AI-generated · IEMA.ai"
+
+
+def _watermark_image(img_bytes: bytes) -> bytes:
+    """Stamp a visible, semi-transparent label in a corner. Best-effort —
+    any failure here must not block image generation, so it falls back to
+    returning the untouched bytes."""
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        font_size = max(14, img.width // 40)
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()  # bundled with Pillow, always available
+        bbox = draw.textbbox((0, 0), _WATERMARK_LABEL, font=font)
+        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad = font_size // 2
+        x = img.width - text_w - pad * 2
+        y = img.height - text_h - pad * 2
+        draw.rectangle([x, y, x + text_w + pad * 2, y + text_h + pad * 2], fill=(0, 0, 0, 120))
+        draw.text((x + pad, y + pad - bbox[1]), _WATERMARK_LABEL, font=font, fill=(255, 255, 255, 230))
+        out = Image.alpha_composite(img, overlay).convert("RGB")
+        buf = io.BytesIO()
+        out.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Image watermarking failed; returning unwatermarked image")
+        return img_bytes
+
+
+def _watermark_video_if_possible(path: Path) -> None:
+    """Best-effort burn-in via ffmpeg's drawtext filter. Silently no-ops when
+    ffmpeg isn't installed on this host rather than failing generation — this
+    host doesn't currently ship ffmpeg, so treat this as pending until it's
+    added to the deployment."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.warning("ffmpeg not found — video generated without a visible AI-generated watermark")
+        return
+    tmp = path.with_suffix(".tmp.mp4")
+    cmd = [
+        ffmpeg, "-y", "-i", str(path),
+        "-vf", "drawtext=text='AI-generated - IEMA.ai':fontcolor=white@0.85:fontsize=h/25:"
+               "box=1:boxcolor=black@0.45:boxborderw=8:x=w-tw-16:y=h-th-16",
+        "-codec:a", "copy", str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        tmp.replace(path)
+    except Exception as e:
+        logger.warning(f"ffmpeg watermark burn-in failed, keeping original video: {e}")
+        tmp.unlink(missing_ok=True)
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
@@ -90,14 +190,18 @@ def video_model_meta(model_id: Optional[str]) -> dict:
 async def generate_image_bytes(prompt: str, quality: str = "low", n: int = 1,
                                model: Optional[str] = None) -> List[bytes]:
     """Generate images with a catalog model; unknown ids fall back to the default."""
+    block_reason = await check_impersonation_risk(prompt)
+    if block_reason:
+        raise ValueError(block_reason)
     sel = image_model_meta(model)
     gen = OpenAIImageGeneration(provider=sel["provider"])
-    return await gen.generate_images(
+    images = await gen.generate_images(
         prompt=prompt,
         model=sel["id"],
         number_of_images=n,
         quality=quality,
     )
+    return await asyncio.gather(*(asyncio.to_thread(_watermark_image, b) for b in images))
 
 
 
@@ -146,6 +250,9 @@ async def generate_video(prompt: str, model: str = "veo-fast",
         raise ValueError(f"Unsupported aspect_ratio {aspect_ratio}; use one of {sorted(_ALLOWED_ASPECTS)}")
     if duration not in _ALLOWED_DURATIONS:
         raise ValueError(f"Unsupported duration {duration}s; use one of {sorted(_ALLOWED_DURATIONS)}")
+    block_reason = await check_impersonation_risk(prompt)
+    if block_reason:
+        raise ValueError(block_reason)
 
     import asyncio as _aio
 
@@ -185,6 +292,7 @@ async def generate_video(prompt: str, model: str = "veo-fast",
         filename = f"veo_{uuid.uuid4().hex}.mp4"
         out = VIDEO_OUT_DIR / filename
         gv.video.save(str(out))
+        _watermark_video_if_possible(out)
         return filename, out
 
     filename, out = await _aio.to_thread(_run)

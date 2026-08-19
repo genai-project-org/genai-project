@@ -190,6 +190,8 @@ async def studio_image(req: ImageGenRequest, user: User = Depends(get_current_us
                      "urls": [u["url"] for u in urls]},
         )
         return {"images": urls, "credits_used": credits_total, "balance": last_balance}
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
     except HTTPException:
         raise
     except Exception as e:
