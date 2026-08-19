@@ -29,6 +29,7 @@ from routers.builder_routes import router as builder_router
 from routers.counseling_routes import router as counseling_router
 from routers.resume_routes import router as resume_router
 from routers.report_routes import router as report_router
+from routers.legal_routes import router as legal_router
 from middleware.data_lake_middleware import DataLakeMiddleware
 from middleware.security import SecurityHeadersMiddleware, AdminHMACMiddleware, limiter
 from slowapi.errors import RateLimitExceeded
@@ -64,6 +65,7 @@ async def health():
 
 
 app.include_router(auth_router, prefix="/auth", include_in_schema=False)
+app.include_router(legal_router, include_in_schema=False)
 api_router.include_router(auth_router, prefix="/auth")
 api_router.include_router(wallet_router)
 api_router.include_router(chat_router)
