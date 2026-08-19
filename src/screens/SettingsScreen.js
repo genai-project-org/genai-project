@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, Alert, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, Alert, TouchableOpacity, Linking } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import api from '../api';
+import api, { API_BASE } from '../api';
 import { logout, setUser } from '../store/slices/authSlice';
 import ScreenHeader from '../components/ScreenHeader';
 import { Card, Button, Input, Label } from '../components/UI';
@@ -73,6 +73,18 @@ export default function SettingsScreen({ navigation }) {
           <Text style={{ color: colors.textMuted, fontSize: fontSize.sm, marginTop: 4 }}>
             IEMA.ai mobile uses your device's system theme (dark by default). You can change this in your device settings.
           </Text>
+        </Card>
+
+        <Card>
+          <TouchableOpacity
+            testID="privacy-policy-link"
+            onPress={() => Linking.openURL(`${API_BASE.replace(/\/api\/?$/, '')}/privacy`)}
+          >
+            <Text style={{ color: colors.primary, fontSize: fontSize.md, fontWeight: '600' }}>Privacy Policy</Text>
+            <Text style={{ color: colors.textMuted, fontSize: fontSize.sm, marginTop: 4 }}>
+              What we collect, why, and how to delete your data.
+            </Text>
+          </TouchableOpacity>
         </Card>
 
         <Card style={{ borderColor: colors.destructive + '80', backgroundColor: colors.destructiveDim }}>

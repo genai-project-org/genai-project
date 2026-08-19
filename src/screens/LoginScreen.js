@@ -8,11 +8,12 @@ import {
   Alert,
   TouchableOpacity,
   Image,
+  Linking,
 } from "react-native";
 import { useDispatch } from "react-redux";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Sparkles } from "lucide-react-native";
-import api from "../api";
+import api, { API_BASE } from "../api";
 import { setAuth } from "../store/slices/authSlice";
 import { colors, spacing, fontSize } from "../theme";
 import { Button, Input, Label } from "../components/UI";
@@ -164,6 +165,26 @@ export default function LoginScreen({ navigation }) {
             </Text>
           </Text>
         </View>
+
+        <Text
+          style={{
+            color: colors.textDim,
+            fontSize: fontSize.xs,
+            textAlign: "center",
+            marginTop: 16,
+          }}
+        >
+          By continuing, you agree to our{" "}
+          <Text
+            style={{ color: colors.primary }}
+            onPress={() =>
+              Linking.openURL(`${API_BASE.replace(/\/api\/?$/, "")}/privacy`)
+            }
+          >
+            Privacy Policy
+          </Text>
+          .
+        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
