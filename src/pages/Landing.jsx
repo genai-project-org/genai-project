@@ -227,7 +227,7 @@ export default function Landing() {
             <span>supercreater.ai © 2026 — Own the data. Grow every day.</span>
           </div>
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
-            <a href="#" className="hover:text-foreground">Privacy</a>
+            <Link to="/privacy" className="hover:text-foreground">Privacy</Link>
             <a href="#" className="hover:text-foreground">Terms</a>
             <a href="#" className="hover:text-foreground">Contact</a>
           </div>

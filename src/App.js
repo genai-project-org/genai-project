@@ -8,6 +8,7 @@ import Landing from '@/pages/Landing';
 import AuthPage from '@/pages/AuthPage';
 import AuthCallback from '@/pages/AuthCallback';
 import ForgotPassword from '@/pages/ForgotPassword';
+import Privacy from '@/pages/Privacy';
 import ResetPassword from '@/pages/ResetPassword';
 import MobileOAuthBridge from '@/pages/MobileOAuthBridge';
 import AppLayout from '@/components/AppLayout';
@@ -42,6 +43,7 @@ function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/mobile-oauth" element={<MobileOAuthBridge />} />
+            <Route path="/privacy" element={<Privacy />} />
             <Route path="/payment-success" element={<PaymentSuccess />} />
 
             <Route element={<AppLayout />}>
