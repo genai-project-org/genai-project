@@ -2630,6 +2630,11 @@ expo-build-properties@~0.14.8:
     ajv "^8.11.0"
     semver "^7.6.0"
 
+expo-clipboard@~7.1.5:
+  version "7.1.5"
+  resolved "https://registry.npmjs.org/expo-clipboard/-/expo-clipboard-7.1.5.tgz"
+  integrity sha512-TCANUGOxouoJXxKBW5ASJl2WlmQLGpuZGemDCL2fO5ZMl57DGTypUmagb0CVUFxDl0yAtFIcESd78UsF9o64aw==
+
 expo-constants@~17.1.7, expo-constants@~17.1.8:
   version "17.1.8"
   resolved "https://registry.npmjs.org/expo-constants/-/expo-constants-17.1.8.tgz"

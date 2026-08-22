@@ -13,6 +13,7 @@ import {
   Briefcase,
   GraduationCap,
   Send,
+  Square,
   Database,
   Sparkles,
 } from "lucide-react-native";
@@ -33,6 +34,11 @@ export default function CounselingScreen({ navigation }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef(null);
+  const abortControllerRef = useRef(null);
+
+  const stopGeneration = () => {
+    abortControllerRef.current?.abort();
+  };
 
   useEffect(() => {
     setMessages([]);
@@ -48,7 +54,13 @@ export default function CounselingScreen({ navigation }) {
     setInput("");
     setLoading(true);
     try {
-      const { data } = await api.post("/counseling", { mode, message: text });
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const { data } = await api.post(
+        "/counseling",
+        { mode, message: text },
+        { signal: controller.signal }
+      );
       setMessages((prev) => [
         ...prev,
         {
@@ -61,6 +73,10 @@ export default function CounselingScreen({ navigation }) {
         },
       ]);
     } catch (e) {
+      if (e?.code === "ERR_CANCELED") {
+        // User tapped Stop — no error message added.
+        return;
+      }
       const message =
         e.response?.data?.detail ||
         e.response?.data?.message ||
@@ -276,19 +292,23 @@ export default function CounselingScreen({ navigation }) {
           testID="counseling-input"
         />
         <TouchableOpacity
-          onPress={send}
-          disabled={loading || input.trim().length < 3}
+          onPress={loading ? stopGeneration : send}
+          disabled={!loading && input.trim().length < 3}
           style={{
             backgroundColor: colors.primary,
-            opacity: input.trim().length < 3 ? 0.5 : 1,
+            opacity: !loading && input.trim().length < 3 ? 0.5 : 1,
             borderRadius: radii.md,
             paddingHorizontal: 14,
             alignItems: "center",
             justifyContent: "center",
           }}
-          testID="counseling-send-btn"
+          testID={loading ? "counseling-stop-btn" : "counseling-send-btn"}
         >
-          <Send color="white" size={16} />
+          {loading ? (
+            <Square color="white" size={14} fill="white" />
+          ) : (
+            <Send color="white" size={16} />
+          )}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>

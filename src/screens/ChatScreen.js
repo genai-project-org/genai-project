@@ -18,14 +18,17 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ArrowLeft,
   Send,
+  Square,
   Paperclip,
   X,
   Sparkles,
   Loader as LoaderIcon,
   ChevronDown,
   Check,
+  Copy,
 } from "lucide-react-native";
 import * as ImagePicker from "expo-image-picker";
+import * as Clipboard from "expo-clipboard";
 import Markdown from "react-native-markdown-display";
 import api, { API_BASE } from "../api";
 import { setWalletBalance } from "../store/slices/uiSlice";
@@ -47,8 +50,13 @@ export default function ChatScreen({ navigation, route }) {
   const [selectedModel, setSelectedModel] = useState(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const scrollRef = useRef(null);
+  const abortControllerRef = useRef(null);
   const { access_token } = useSelector((s) => s.auth);
   const dispatch = useDispatch();
+
+  const stopGeneration = () => {
+    abortControllerRef.current?.abort();
+  };
 
   useEffect(() => {
     (async () => {
@@ -215,12 +223,18 @@ export default function ChatScreen({ navigation, route }) {
       // setStreamText("");
       // setMeta(null);
 
-      const { data } = await api.post("/chat", {
-        content: text,
-        conversation_id: conversationId,
-        attachments: sentAttachments,
-        model: selectedModel === "iema" ? undefined : selectedModel,
-      });
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const { data } = await api.post(
+        "/chat",
+        {
+          content: text,
+          conversation_id: conversationId,
+          attachments: sentAttachments,
+          model: selectedModel === "iema" ? undefined : selectedModel,
+        },
+        { signal: controller.signal }
+      );
 
       if (!conversationId) {
         setConversationId(data.conversation_id);
@@ -239,6 +253,10 @@ export default function ChatScreen({ navigation, route }) {
 
       dispatch(setWalletBalance((await api.get("/wallet/")).data.total));
     } catch (e) {
+      if (e?.code === "ERR_CANCELED") {
+        // User tapped Stop — no error, no assistant reply added.
+        return;
+      }
       const detail = e.response?.data?.detail;
 
       let message = "Something went wrong. Please try again.";
@@ -587,21 +605,21 @@ export default function ChatScreen({ navigation, route }) {
           testID="chat-input"
         />
         <TouchableOpacity
-          onPress={send}
-          disabled={(!input.trim() && attachments.length === 0) || streaming}
+          onPress={streaming ? stopGeneration : send}
+          disabled={!streaming && !input.trim() && attachments.length === 0}
           style={{
             padding: 12,
             borderRadius: radii.md,
             backgroundColor: colors.primary,
             opacity:
-              (!input.trim() && attachments.length === 0) || streaming
+              !streaming && !input.trim() && attachments.length === 0
                 ? 0.5
                 : 1,
           }}
-          testID="chat-send"
+          testID={streaming ? "chat-stop" : "chat-send"}
         >
           {streaming ? (
-            <ActivityIndicator size="small" color="#fff" />
+            <Square color="#fff" size={16} fill="#fff" />
           ) : (
             <Send color="#fff" size={18} />
           )}
@@ -610,6 +628,54 @@ export default function ChatScreen({ navigation, route }) {
     </KeyboardAvoidingView>
   );
 }
+
+function CodeBlock({ content, textStyle, testID }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    await Clipboard.setStringAsync(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <View
+      testID={testID}
+      style={{ backgroundColor: colors.surfaceElevated, borderRadius: 8, marginVertical: 4, overflow: "hidden" }}
+    >
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 8, paddingTop: 6 }}>
+        <TouchableOpacity onPress={onCopy} style={{ flexDirection: "row", alignItems: "center", gap: 4, padding: 4 }}>
+          {copied ? <Check color={colors.primary} size={12} /> : <Copy color={colors.textMuted} size={12} />}
+          <Text style={{ color: copied ? colors.primary : colors.textMuted, fontSize: 10 }}>
+            {copied ? "Copied" : "Copy"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={[textStyle, { backgroundColor: "transparent", paddingTop: 0 }]}>{content}</Text>
+    </View>
+  );
+}
+
+function trimTrailingNewline(content) {
+  return typeof content === "string" && content.endsWith("\n") ? content.slice(0, -1) : content;
+}
+
+const markdownRules = {
+  code_block: (node, children, parent, styles, inheritedStyles = {}) => (
+    <CodeBlock
+      key={node.key}
+      testID="code-block"
+      content={trimTrailingNewline(node.content)}
+      textStyle={[inheritedStyles, styles.code_block]}
+    />
+  ),
+  fence: (node, children, parent, styles, inheritedStyles = {}) => (
+    <CodeBlock
+      key={node.key}
+      testID="code-fence"
+      content={trimTrailingNewline(node.content)}
+      textStyle={[inheritedStyles, styles.fence]}
+    />
+  ),
+};
 
 const mdStyles = {
   body: { color: colors.text, fontSize: fontSize.md, lineHeight: 22 },
@@ -734,7 +800,7 @@ function MessageBubble({ message }) {
             ))}
           </View>
         )}
-        <Markdown style={mdStyles}>{message.content}</Markdown>
+        <Markdown style={mdStyles} rules={markdownRules}>{message.content}</Markdown>
 
         {!isUser && message.model && (
           <>
