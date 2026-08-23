@@ -3,7 +3,7 @@ import os
 import json
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Request, status
 from fastapi.responses import StreamingResponse
 from bson import ObjectId
 from auth import get_current_user
@@ -293,6 +293,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
 @router.post("")
 async def send_message(
     req: SendMessageRequest,
+    request: Request,
     user: User = Depends(get_current_user),
 ):
     await ensure_model_allowed(user.id, user.role, req.model)
@@ -372,6 +373,13 @@ async def send_message(
         req.model,
         attachments=req.attachments,
     ):
+        # Client tapped Stop (or otherwise dropped the connection) — bail out
+        # without saving an assistant message or spending credits, instead of
+        # finishing the generation server-side regardless and having it
+        # reappear next time the conversation loads.
+        if await request.is_disconnected():
+            return {"stopped": True}
+
         if evt["type"] == "meta":
             provider = evt["provider"]
             model = evt["model"]
