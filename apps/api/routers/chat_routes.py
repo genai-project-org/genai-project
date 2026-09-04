@@ -1,0 +1,457 @@
+"""Chat/AI Workspace routes with streaming."""
+import os
+import json
+import logging
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends, Request, status
+from fastapi.responses import StreamingResponse
+from bson import ObjectId
+from auth import get_current_user
+from db import conversations_col, messages_col, ai_requests_col, now_iso
+from models import (
+    SendMessageRequest, RenameConversationRequest, Conversation, Message, User
+)
+from services.credit_service import has_credits, deduct_credits
+from services.pricing_engine import spend, resolve_cost
+from services.ai_service import (
+    stream_ai_response, MODEL_CATALOG, ensure_model_allowed, is_premium_model,
+    user_allows_premium, default_model_id,
+)
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/chat", tags=["chat"])
+
+CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
+
+
+@router.get("/models")
+async def list_models(user: User = Depends(get_current_user)):
+    # `locked` is per-caller so the picker can grey out what this plan cannot use.
+    may_use_premium = await user_allows_premium(user.id, user.role)
+    # `default` follows the user's Settings → AI provider choice, so the picker preselects a
+    # model from the provider they asked for. None (iema/auto) keeps the catalog's own flag.
+    pref_id = default_model_id(user.ai_provider)
+    return {"items": [{
+        "id": m["id"], "name": m["name"], "label": m["label"],
+        "description": m["description"],
+        "default": (m["id"] == pref_id) if pref_id else m.get("default", False),
+        "premium": bool(m.get("premium")),
+        "locked": bool(m.get("premium")) and not may_use_premium,
+    } for m in MODEL_CATALOG]}
+
+
+@router.get("/conversations")
+async def list_conversations(user: User = Depends(get_current_user), limit: int = 100, skip: int = 0):
+    cursor = conversations_col.find({"user_id": user.id}).sort([("pinned", -1), ("updated_at", -1)]).skip(skip).limit(limit)
+    items = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        items.append(doc)
+    return {"items": items}
+
+
+@router.post("/conversations")
+async def create_conversation(user: User = Depends(get_current_user)):
+    conv = Conversation(user_id=user.id, title="New Chat")
+    result = await conversations_col.insert_one(conv.to_mongo())
+    conv.id = str(result.inserted_id)
+    return conv.model_dump()
+
+
+@router.get("/conversations/{conv_id}")
+async def get_conversation(conv_id: str, user: User = Depends(get_current_user)):
+    try:
+        doc = await conversations_col.find_one({"_id": ObjectId(conv_id), "user_id": user.id})
+    except Exception:
+        doc = None
+    if not doc:
+        raise HTTPException(404, "Conversation not found")
+    doc["id"] = str(doc.pop("_id"))
+    # fetch messages
+    msg_cursor = messages_col.find({"conversation_id": conv_id}).sort("created_at", 1)
+    msgs = []
+    async for m in msg_cursor:
+        m["id"] = str(m.pop("_id"))
+        msgs.append(m)
+    return {"conversation": doc, "messages": msgs}
+
+
+@router.patch("/conversations/{conv_id}")
+async def rename_conversation(conv_id: str, req: RenameConversationRequest, user: User = Depends(get_current_user)):
+    try:
+        result = await conversations_col.update_one(
+            {"_id": ObjectId(conv_id), "user_id": user.id},
+            {"$set": {"title": req.title, "updated_at": now_iso()}},
+        )
+    except Exception:
+        raise HTTPException(400, "Invalid conversation id")
+    if result.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@router.post("/conversations/{conv_id}/pin")
+async def toggle_pin(conv_id: str, user: User = Depends(get_current_user)):
+    doc = await conversations_col.find_one({"_id": ObjectId(conv_id), "user_id": user.id})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    new_pinned = not doc.get("pinned", False)
+    await conversations_col.update_one({"_id": ObjectId(conv_id)}, {"$set": {"pinned": new_pinned, "updated_at": now_iso()}})
+    return {"pinned": new_pinned}
+
+
+@router.delete("/conversations/{conv_id}")
+async def delete_conversation(conv_id: str, user: User = Depends(get_current_user)):
+    await conversations_col.delete_one({"_id": ObjectId(conv_id), "user_id": user.id})
+    await messages_col.delete_many({"conversation_id": conv_id})
+    return {"ok": True}
+
+
+@router.post("/messages/{message_id}/flag")
+async def toggle_message_flag(message_id: str, user: User = Depends(get_current_user)):
+    """Toggle a personal bookmark on one of the user's own messages."""
+    try:
+        msg = await messages_col.find_one({"_id": ObjectId(message_id), "user_id": user.id})
+    except Exception:
+        raise HTTPException(400, "Invalid message id")
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    flagged = not msg.get("flagged", False)
+    await messages_col.update_one({"_id": msg["_id"]}, {"$set": {"flagged": flagged}})
+    return {"flagged": flagged}
+
+
+@router.get("/flagged")
+async def list_flagged(limit: int = 50, user: User = Depends(get_current_user)):
+    """The user's flagged prompts, newest first — backs the Flagged Prompts sidebar list.
+
+    ponytail: unindexed find on `messages`; add a {user_id, flagged} compound index if the
+    collection grows enough for this to show up in profiling.
+    """
+    cursor = messages_col.find({"user_id": user.id, "flagged": True}).sort("created_at", -1).limit(min(limit, 200))
+    items = [{
+        "id": str(d["_id"]), "conversation_id": d.get("conversation_id"),
+        "role": d.get("role"), "content": d.get("content", ""),
+        "created_at": d.get("created_at"),
+    } async for d in cursor]
+    return {"items": items}
+
+
+@router.delete("/conversations/{conv_id}/messages/{message_id}")
+async def delete_from_message(conv_id: str, message_id: str, user: User = Depends(get_current_user)):
+    """Delete `message_id` and every message after it in the conversation.
+
+    Backs "edit prompt": the client truncates here, then re-sends the edited text through
+    /chat/stream, which appends a fresh exchange. That keeps editing on the normal send path,
+    so streaming, billing and history need no special cases.
+    """
+    try:
+        conv = await conversations_col.find_one({"_id": ObjectId(conv_id), "user_id": user.id})
+        msg = await messages_col.find_one({"_id": ObjectId(message_id), "conversation_id": conv_id})
+    except Exception:
+        raise HTTPException(400, "Invalid conversation or message id")
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if not msg:
+        raise HTTPException(404, "Message not found")
+
+    # created_at is an ISO-8601 UTC string with microseconds (db.now_iso), which sorts
+    # lexicographically the same way it sorts chronologically — the same ordering
+    # get_conversation already relies on.
+    result = await messages_col.delete_many({
+        "conversation_id": conv_id,
+        "created_at": {"$gte": msg["created_at"]},
+    })
+    await conversations_col.update_one({"_id": ObjectId(conv_id)}, {"$set": {"updated_at": now_iso()}})
+    return {"deleted": result.deleted_count}
+
+
+@router.post("/stream")
+async def stream_message(req: SendMessageRequest, user: User = Depends(get_current_user)):
+    """SSE streaming endpoint for chat messages."""
+    # Gate before anything is charged or streamed — a 403 mid-SSE is unreadable.
+    await ensure_model_allowed(user.id, user.role, req.model)
+    # Resolve cost dynamically via pricing engine
+    msg_price = await resolve_cost("chat_message")
+    img_price = await resolve_cost("chat_message_image")
+    image_count = 0
+    if req.attachments:
+        image_count = sum(1 for a in req.attachments if (a.get("content_type") or "").startswith("image/"))
+    total_cost = msg_price["credit_cost"] + image_count * img_price["credit_cost"]
+    if not await has_credits(user.id, total_cost):
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "Insufficient credits. Please recharge your wallet.")
+
+    # Get or create conversation
+    conv_id = req.conversation_id
+    if not conv_id:
+        conv = Conversation(user_id=user.id, title=req.content[:60] or "New Chat")
+        result = await conversations_col.insert_one(conv.to_mongo())
+        conv_id = str(result.inserted_id)
+    else:
+        try:
+            existing = await conversations_col.find_one({"_id": ObjectId(conv_id), "user_id": user.id})
+        except Exception:
+            existing = None
+        if not existing:
+            raise HTTPException(404, "Conversation not found")
+
+    # Save user message
+    user_msg = Message(
+        conversation_id=conv_id,
+        user_id=user.id,
+        role="user",
+        content=req.content,
+        attachments=req.attachments or [],
+    )
+    user_result = await messages_col.insert_one(user_msg.to_mongo())
+    user_msg.id = str(user_result.inserted_id)
+
+    # Load history
+    history_docs = await messages_col.find({"conversation_id": conv_id}).sort("created_at", 1).to_list(50)
+    history = [{"role": d["role"], "content": d["content"]} for d in history_docs[:-1]]  # exclude the just-inserted user msg from prefix
+
+    async def event_stream():
+        yield f"data: {json.dumps({'type': 'conversation', 'conversation_id': conv_id, 'user_message_id': user_msg.id})}\n\n"
+        provider = None
+        model = None
+        full_text = ""
+        try:
+            async for evt in stream_ai_response(conv_id, req.content, history, req.model, attachments=req.attachments):
+                if evt["type"] == "meta":
+                    provider = evt["provider"]
+                    model = evt["model"]
+                    yield f"data: {json.dumps(evt)}\n\n"
+                elif evt["type"] == "delta":
+                    full_text += evt["content"]
+                    yield f"data: {json.dumps(evt)}\n\n"
+                elif evt["type"] == "done":
+                    full_text = evt.get("content", full_text) or full_text
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    break
+                elif evt["type"] == "warn":
+                    yield f"data: {json.dumps(evt)}\n\n"
+                elif evt["type"] == "error":
+                    yield f"data: {json.dumps(evt)}\n\n"
+                    break
+
+            if full_text:
+                # Save assistant message
+                asst_msg = Message(
+                    conversation_id=conv_id,
+                    user_id=user.id,
+                    role="assistant",
+                    content=full_text,
+                    provider=provider,
+                    model=model,
+                    credits_used=total_cost,
+                )
+                asst_res = await messages_col.insert_one(asst_msg.to_mongo())
+                # Central spend (window + wallet + provider tracking)
+                # Carry the post-charge balance out to the `saved` event below: this endpoint
+                # is consumed by raw fetch, so it bypasses the axios interceptor that keeps
+                # the wallet counter fresh everywhere else. Stays None if the spend is
+                # swallowed, and keeps the last good value if an image spend trips the window.
+                balance = None
+                try:
+                    billing = await spend(user.id, "chat_message", provider_override=provider,
+                                          description=f"Chat message ({model})", ref_id=conv_id)
+                    balance = billing["balance"]
+                    if image_count:
+                        for _ in range(image_count):
+                            billing = await spend(user.id, "chat_message_image", provider_override=provider,
+                                                  description=f"Chat image ({model})", ref_id=conv_id)
+                            balance = billing["balance"]
+                except HTTPException:
+                    # rate-limit — already deducted via primary msg; ignore silently for chat
+                    pass
+                # Update conversation
+                await conversations_col.update_one(
+                    {"_id": ObjectId(conv_id)},
+                    {"$set": {"updated_at": now_iso(), "provider_used": provider, "model_used": model}},
+                )
+                # Log AI request
+                await ai_requests_col.insert_one({
+                    "user_id": user.id,
+                    "conversation_id": conv_id,
+                    "provider": provider,
+                    "model": model,
+                    "credits_used": total_cost,
+                    "created_at": now_iso(),
+                })
+                yield f"data: {json.dumps({'type': 'saved', 'assistant_message_id': str(asst_res.inserted_id), 'credits_used': total_cost, 'balance': balance})}\n\n"
+        except Exception as e:
+            logger.exception("Chat stream error")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+@router.post("")
+async def send_message(
+    req: SendMessageRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    await ensure_model_allowed(user.id, user.role, req.model)
+    msg_price = await resolve_cost("chat_message")
+    img_price = await resolve_cost("chat_message_image")
+
+    image_count = 0
+    if req.attachments:
+        image_count = sum(
+            1
+            for a in req.attachments
+            if (a.get("content_type") or "").startswith("image/")
+        )
+
+    total_cost = msg_price["credit_cost"] + image_count * img_price["credit_cost"]
+
+    if not await has_credits(user.id, total_cost):
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            "Insufficient credits. Please recharge your wallet."
+        )
+
+    conv_id = req.conversation_id
+
+    if not conv_id:
+        conv = Conversation(
+            user_id=user.id,
+            title=req.content[:60] or "New Chat"
+        )
+        result = await conversations_col.insert_one(conv.to_mongo())
+        conv_id = str(result.inserted_id)
+    else:
+        existing = await conversations_col.find_one(
+            {
+                "_id": ObjectId(conv_id),
+                "user_id": user.id,
+            }
+        )
+
+        if not existing:
+            raise HTTPException(404, "Conversation not found")
+
+    user_msg = Message(
+        conversation_id=conv_id,
+        user_id=user.id,
+        role="user",
+        content=req.content,
+        attachments=req.attachments or [],
+    )
+
+    user_result = await messages_col.insert_one(user_msg.to_mongo())
+    user_msg.id = str(user_result.inserted_id)
+
+    history_docs = (
+        await messages_col
+        .find({"conversation_id": conv_id})
+        .sort("created_at", 1)
+        .to_list(50)
+    )
+
+    history = [
+        {
+            "role": d["role"],
+            "content": d["content"],
+        }
+        for d in history_docs[:-1]
+    ]
+
+    provider = None
+    model = None
+    full_text = ""
+
+    async for evt in stream_ai_response(
+        conv_id,
+        req.content,
+        history,
+        req.model,
+        attachments=req.attachments,
+    ):
+        # Client tapped Stop (or otherwise dropped the connection) — bail out
+        # without saving an assistant message or spending credits, instead of
+        # finishing the generation server-side regardless and having it
+        # reappear next time the conversation loads.
+        if await request.is_disconnected():
+            return {"stopped": True}
+
+        if evt["type"] == "meta":
+            provider = evt["provider"]
+            model = evt["model"]
+
+        elif evt["type"] == "delta":
+            full_text += evt["content"]
+
+        elif evt["type"] == "done":
+            full_text = evt.get("content", full_text) or full_text
+            break
+
+        elif evt["type"] == "error":
+            raise HTTPException(500, evt["message"])
+
+    assistant = Message(
+        conversation_id=conv_id,
+        user_id=user.id,
+        role="assistant",
+        content=full_text,
+        provider=provider,
+        model=model,
+        credits_used=total_cost,
+    )
+
+    result = await messages_col.insert_one(assistant.to_mongo())
+
+    billing = await spend(
+        user.id,
+        "chat_message",
+        provider_override=provider,
+        description=f"Chat message ({model})",
+        ref_id=conv_id,
+    )
+
+    if image_count:
+        for _ in range(image_count):
+            billing = await spend(
+                user.id,
+                "chat_message_image",
+                provider_override=provider,
+                description=f"Chat image ({model})",
+                ref_id=conv_id,
+            )
+
+    await conversations_col.update_one(
+        {"_id": ObjectId(conv_id)},
+        {
+            "$set": {
+                "updated_at": now_iso(),
+                "provider_used": provider,
+                "model_used": model,
+            }
+        },
+    )
+
+    await ai_requests_col.insert_one(
+        {
+            "user_id": user.id,
+            "conversation_id": conv_id,
+            "provider": provider,
+            "model": model,
+            "credits_used": total_cost,
+            "created_at": now_iso(),
+        }
+    )
+
+    return {
+        "conversation_id": conv_id,
+        "assistant_message_id": str(result.inserted_id),
+        "content": full_text,
+        "provider": provider,
+        "model": model,
+        "credits_used": total_cost,
+        "balance": billing["balance"],
+    }
