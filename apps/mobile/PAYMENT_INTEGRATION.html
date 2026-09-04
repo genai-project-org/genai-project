@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IEMA.ai — Payment Integration Documentation</title>
+<style>
+  @page { margin: 2.2cm 1.8cm; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: #1a1a1a;
+    font-size: 10.5pt;
+    line-height: 1.5;
+    max-width: 100%;
+  }
+  h1 { font-size: 22pt; margin-top: 0; margin-bottom: 4px; }
+  h2 {
+    font-size: 15pt;
+    margin-top: 28px;
+    border-bottom: 2px solid #2b3a55;
+    padding-bottom: 4px;
+    color: #16233d;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 12pt;
+    margin-top: 18px;
+    color: #223;
+    page-break-after: avoid;
+  }
+  h4 { font-size: 10.5pt; margin-top: 12px; page-break-after: avoid; }
+  .subtitle { color: #555; font-size: 11pt; margin-bottom: 2px; }
+  .meta { color: #777; font-size: 9pt; margin-bottom: 24px; }
+  .cover {
+    text-align: center;
+    padding-top: 22%;
+    page-break-after: always;
+  }
+  .cover h1 { font-size: 30pt; }
+  .cover .tag {
+    display: inline-block;
+    margin-top: 24px;
+    padding: 6px 16px;
+    background: #eef2fa;
+    color: #2b3a55;
+    border-radius: 20px;
+    font-size: 10pt;
+    font-weight: 600;
+  }
+  .cover .meta { margin-top: 40px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 10px 0 16px;
+    font-size: 9.5pt;
+  }
+  th, td {
+    border: 1px solid #d7dce3;
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #eef2fa; color: #16233d; }
+  code {
+    background: #f2f3f5;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+    font-size: 9.3pt;
+  }
+  pre {
+    background: #1e1e2e;
+    color: #d9deed;
+    padding: 10px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 8.8pt;
+    line-height: 1.45;
+    page-break-inside: avoid;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .box {
+    border-left: 4px solid #2b3a55;
+    background: #f7f9fc;
+    padding: 10px 14px;
+    margin: 12px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .box.warn { border-left-color: #b5651d; background: #fdf4ec; }
+  .box.fix { border-left-color: #1e7d4a; background: #eefaf2; }
+  .box.bug { border-left-color: #b5222d; background: #fdeeee; }
+  ul, ol { margin-top: 4px; margin-bottom: 10px; }
+  li { margin-bottom: 3px; }
+  .badge {
+    display: inline-block;
+    font-size: 8.3pt;
+    font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 10px;
+    color: #fff;
+    margin-right: 4px;
+  }
+  .badge.ios { background: #555; }
+  .badge.android { background: #3ddc84; color: #06331b; }
+  .badge.both { background: #2b3a55; }
+  .badge.fixed { background: #1e7d4a; }
+  .badge.blocked { background: #b5222d; }
+  .toc { background: #f7f9fc; padding: 16px 22px; border-radius: 6px; margin: 16px 0; }
+  .toc a { color: #16233d; text-decoration: none; }
+  .toc li { margin-bottom: 6px; }
+  hr { border: none; border-top: 1px solid #e0e4ea; margin: 24px 0; }
+  .small { font-size: 9pt; color: #666; }
+  .file-path { font-family: monospace; font-size: 9.3pt; color: #16233d; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Payment Integration</h1>
+  <div class="subtitle">IEMA.ai — Mobile &amp; Backend Payments Architecture</div>
+  <div class="tag">RevenueCat · Google Play Billing · Apple StoreKit 2 · Razorpay</div>
+  <div class="meta">
+    Project: IEMA.ai (com.iemaai.app)<br>
+    Documentation compiled: July 28, 2026<br>
+    Covers: architecture, RevenueCat rollout, App Store Connect &amp; Play Console configuration,
+    the expo-iap API migration bugs found and fixed, and the full test/verification process.
+  </div>
+</div>
+
+<h2 id="toc">Table of Contents</h2>
+<div class="toc">
+<ol>
+  <li><a href="#overview">Overview &amp; Payment Architecture</a></li>
+  <li><a href="#backend">Backend Payment Module Map</a></li>
+  <li><a href="#revenuecat">RevenueCat Integration</a></li>
+  <li><a href="#playconsole">Google Play Console Configuration</a></li>
+  <li><a href="#appstore">App Store Connect Configuration</a></li>
+  <li><a href="#codechanges">Mobile Code Changes</a></li>
+  <li><a href="#bugs">Root-Cause Bugs Found &amp; Fixed</a></li>
+  <li><a href="#w9">The Apple W-9 Tax ID Conflict</a></li>
+  <li><a href="#release">Build &amp; Release Process</a></li>
+  <li><a href="#testing">Testing &amp; Verification Journey</a></li>
+  <li><a href="#outcome">Final Outcome</a></li>
+  <li><a href="#reference">Quick Reference</a></li>
+</ol>
+</div>
+
+<h2 id="overview">1. Overview &amp; Payment Architecture</h2>
+<p>IEMA.ai uses three independent, parallel payment paths that all converge on the same backend
+crediting logic. No single provider is used everywhere — each is scoped to what platform policy
+requires or what best fits the checkout surface.</p>
+
+<table>
+<tr><th>Surface</th><th>Recurring plans (subscriptions)</th><th>One-time top-up packs</th></tr>
+<tr><td>iOS app</td><td><span class="badge ios">iOS</span> Apple StoreKit 2 (via <code>expo-iap</code>)</td><td>Razorpay Payment Links (in-app browser)</td></tr>
+<tr><td>Android app</td><td><span class="badge android">Android</span> Google Play Billing (via <code>expo-iap</code>)</td><td>Razorpay Payment Links (in-app browser)</td></tr>
+<tr><td>Web app</td><td>Razorpay Subscriptions</td><td>Razorpay Payment Links (hosted checkout)</td></tr>
+</table>
+
+<p>Recurring plans on mobile <strong>must</strong> use native store billing — this is required by
+both Apple App Store Review Guideline 3.1.1 and Google Play's Billing policy for unlocking in-app
+digital content. Top-up packs are permitted to use Razorpay because they map to a real, off-platform
+account credit balance rather than unlocking in-app content directly.</p>
+
+<p><strong>RevenueCat</strong> sits on top of the native store billing as an <em>observer</em>, not a
+competing checkout. The app's own purchase flow (via <code>expo-iap</code>) still owns the actual
+checkout and server-side receipt verification; RevenueCat is configured with
+<code>purchasesAreCompletedBy: MY_APP</code> so it only watches StoreKit/Play Billing transactions
+and mirrors entitlement state — it does not take over payment and does not affect the existing
+verify/credit flow.</p>
+
+<div class="box">
+<strong>Why RevenueCat at all, if the app already verifies receipts itself?</strong><br>
+It gives a single dashboard across both stores for subscription analytics or ended up being
+requested for future flexibility (e.g. cross-platform entitlement checks, churn/retention reporting)
+without having to build that tooling from the two different store APIs directly.
+</div>
+
+<h2 id="backend">2. Backend Payment Module Map</h2>
+<p>All payment logic funnels through <span class="file-path">IEMA_AI_API_V3/services/payments_service.py</span>
+and is exposed via <span class="file-path">IEMA_AI_API_V3/routers/payments_routes.py</span>. Three
+independent payment paths converge on the same two helper functions:</p>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td><code>_credit_plan</code></td><td>Shared success handler — assigns the plan and upserts the <code>subscriptions</code> document. Called by all three providers.</td></tr>
+<tr><td><code>_revoke_plan</code></td><td>Downgrades a user to the free plan on cancellation/expiration.</td></tr>
+<tr><td><code>get_or_create_rzp_plan</code></td><td>Creates/reuses an immutable Razorpay Plan at the current price (INR-only).</td></tr>
+<tr><td><code>create_subscription</code></td><td>Creates a Razorpay Subscription for a user + plan (web only).</td></tr>
+<tr><td><code>handle_razorpay_webhook</code></td><td>Verifies signature; processes <code>subscription.charged</code> / <code>activated</code> / <code>cancelled</code> events.</td></tr>
+<tr><td><code>verify_apple_receipt</code></td><td>Verifies an Apple receipt against <code>verifyReceipt</code> (prod, falling back to sandbox on status 21007). Idempotent on <code>transaction_id</code>.</td></tr>
+<tr><td><code>verify_google_receipt</code></td><td>Verifies a Google Play purchase/subscription token via the Android Publisher API (service-account auth). Idempotent on <code>purchase_token</code>.</td></tr>
+<tr><td><code>handle_revenuecat_webhook</code></td><td>Auth-checked RevenueCat observer webhook — grants on <code>INITIAL_PURCHASE / RENEWAL / PRODUCT_CHANGE / UNCANCELLATION</code>, revokes on <code>CANCELLATION / EXPIRATION</code>.</td></tr>
+</table>
+
+<h3>Routes</h3>
+<pre>POST /payments/razorpay/order              # one-time top-up (web + mobile)
+GET  /payments/razorpay/link-status/{id}   # poll payment-link status
+POST /payments/razorpay/verify             # signature-verify path
+POST /payments/subscribe/{plan_id}         # create Razorpay subscription (web)
+POST /payments/webhook/razorpay-subscription
+POST /payments/iap/apple/verify            # iOS receipt verify → credit plan
+POST /payments/iap/google/verify           # Android purchase verify → credit plan
+POST /payments/webhook/revenuecat          # RevenueCat observer webhook (hidden from schema)</pre>
+
+<p class="small">No Stripe or PayPal integration exists. Stripe was explicitly removed per a prior
+product decision ("all web payments go through Razorpay") — a few dead code fragments referencing
+it remain (a legacy <code>PaymentTransaction.provider</code> schema literal, an unreachable
+<code>PaymentSuccess.jsx</code> polling branch) but there is no live Stripe code path.</p>
+
+<h2 id="revenuecat">3. RevenueCat Integration</h2>
+<p>RevenueCat was already wired up for iOS Observer Mode before this project began. The work covered
+here was enabling the equivalent Android integration and fixing the underlying client-side purchase
+flow bugs that were silently breaking both platforms.</p>
+
+<h3>3.1 Dashboard state (verified, both platforms)</h3>
+<table>
+<tr><th>Item</th><th>iOS</th><th>Android</th></tr>
+<tr><td>RevenueCat app entry</td><td>"IEMA AI (App Store)" — exists</td><td>"IEMA AI (Play Store)" — exists</td></tr>
+<tr><td>SDK API key</td><td><code>appl_jFQKLAUZpcGOOLtuiKpFLQKRMNp</code></td><td><code>goog_hSnLKVEWOegGCbkpfFRQDTUKYRq</code></td></tr>
+<tr><td>Package / Bundle ID</td><td><code>com.iemaai.app</code></td><td><code>com.iemaai.app</code> (matches Play Console)</td></tr>
+<tr><td>Service-account credentials (Android)</td><td>n/a</td><td>Valid, already uploaded</td></tr>
+<tr><td>Products + entitlements</td><td>4 products, all attached to entitlements (some "In Review" pending Apple review)</td><td>4 products (<code>iema.pro.monthly:1bp</code>, <code>iema.pro.annual:2bp</code>, <code>iema.team.monthly:3tp</code>, <code>iema.team.annual:4tp</code>), all Published with 1 entitlement each</td></tr>
+<tr><td>Webhook</td><td colspan="2"><code>https://api.iema.ai/api/payments/webhook/revenuecat</code> — Active, scoped to "All apps" (covers both platforms with one config)</td></tr>
+<tr><td>Real-time developer notifications (Play) / equivalent</td><td>n/a</td><td>Not connected — optional; RevenueCat's own webhook already covers events without it</td></tr>
+</table>
+
+<h3>3.2 Code: enabling Android observer mode</h3>
+<p><span class="file-path">supercreater-ai-frontend/mobile/src/services/revenuecat.js</span> previously
+hard-gated on <code>Platform.OS !== 'ios'</code>, meaning Android never configured RevenueCat at all.
+This was relaxed to configure on both platforms, selecting the correct SDK key per platform:</p>
+<pre><code>const REVENUECAT_API_KEY = Platform.select({
+  ios: Constants.expoConfig?.extra?.revenueCatIosKey,
+  android: Constants.expoConfig?.extra?.revenueCatAndroidKey,
+});
+
+export function initRevenueCat(userId) {
+  if (_configured || !userId || !REVENUECAT_API_KEY) return;
+  const Purchases = loadPurchases();
+  if (!Purchases) return;
+
+  const { PURCHASES_ARE_COMPLETED_BY_TYPE, STOREKIT_VERSION } = require('react-native-purchases');
+  Purchases.configure({
+    apiKey: REVENUECAT_API_KEY,
+    appUserID: userId,
+    purchasesAreCompletedBy: {
+      type: PURCHASES_ARE_COMPLETED_BY_TYPE.MY_APP,
+      storeKitVersion: STOREKIT_VERSION.STOREKIT_2,
+    },
+  });
+  _configured = true;
+}</code></pre>
+<p class="small"><code>storeKitVersion</code> is an iOS-only field that Android silently ignores, so the
+same <code>purchasesAreCompletedBy</code> configuration object is safely shared across both platforms
+without branching.</p>
+
+<h3>3.3 Moving API keys out of source</h3>
+<p>The iOS key had previously been hardcoded directly in <code>revenuecat.js</code>. Both keys were
+moved to environment variables, which required converting the static
+<span class="file-path">app.json</span> to a dynamic <span class="file-path">app.config.js</span>
+(needed to read <code>process.env</code> at config-evaluation time):</p>
+<pre><code>// app.config.js
+extra: {
+  apiBaseUrl: "https://api.iema.ai",
+  revenueCatIosKey: process.env.REVENUECAT_IOS_API_KEY,
+  revenueCatAndroidKey: process.env.REVENUECAT_ANDROID_API_KEY,
+  eas: { projectId: "d6e0dba8-f63e-40a4-8cba-baa765a2f423" }
+}</code></pre>
+<p>A local <span class="file-path">.env</span> (gitignored) and a committed
+<span class="file-path">.env.example</span> were added for local development. For EAS Cloud builds,
+both variables were also registered directly as EAS project environment variables (via
+<code>eas env:create</code>) across the <code>production</code>, <code>preview</code>, and
+<code>development</code> environments, so cloud builds pick them up automatically without needing the
+local <code>.env</code> file.</p>
+
+<h2 id="playconsole">4. Google Play Console Configuration</h2>
+
+<h3>4.1 App &amp; subscription state</h3>
+<ul>
+<li>App <code>com.iemaai.app</code> is live in production (build 30 at the time this work began).</li>
+<li>All 4 subscriptions exist with matching product IDs: <code>iema.pro.monthly</code>,
+<code>iema.pro.annual</code>, <code>iema.team.monthly</code>, <code>iema.team.annual</code> — each
+with exactly one Active base plan.</li>
+</ul>
+
+<div class="box warn">
+<strong>Issue found:</strong> all 4 base plans were priced <strong>India-only</strong> (INR),
+inherited from an earlier India-first launch decision. Any tester or user whose Play Store account
+country wasn't India would see the subscription silently fail to resolve — indistinguishable from a
+code bug without checking Play Console directly.
+</div>
+
+<div class="box fix">
+<strong>Fix applied:</strong> expanded all 4 base plans to 177 countries/regions, using the same USD
+reference price already used on iOS/web, letting Play Console auto-convert per-region:
+<table>
+<tr><th>Plan</th><th>Reference price</th><th>Notes</th></tr>
+<tr><td>Pro Monthly</td><td>$19.99 / mo</td><td>Clean across all 177 regions</td></tr>
+<tr><td>Pro Annual</td><td>$199.99 / yr</td><td>Clean across all 177 regions</td></tr>
+<tr><td>Team Monthly</td><td>$49.99 / mo</td><td>Clean across all 177 regions</td></tr>
+<tr><td>Team Annual</td><td>$499.99 / yr</td><td>South Korea capped at ₩599,000 (Google enforces a ₩70–₩600,000 range for KRW-denominated auto-renewing subscriptions) — set just under the cap</td></tr>
+</table>
+Since there were 0 existing subscribers at the time, all price changes applied immediately with no
+migration/grandfathering concerns.
+</div>
+
+<h3>4.2 Internal testing track &amp; tester enrollment</h3>
+<p>The Internal Testing track ("Testers" tab) had two email lists attached over the course of this
+work:</p>
+<ul>
+<li><strong>SAL Testers</strong> — already attached from the start; contains
+<code>siddharth.bose@iemlabs.com</code>, <code>arunava.kundu@iemlabs.com</code>, and (as later
+discovered) <code>drarunkundu22@gmail.com</code> as well.</li>
+<li><strong>IEMA AI testers</strong> — a separate list containing only
+<code>drarunkundu22@gmail.com</code>, which existed but was <em>not</em> attached to the Internal
+Testing track. It was attached during this work as a defensive/redundant fix, though the account
+turned out to already be covered via SAL Testers.</li>
+</ul>
+
+<div class="box">
+<strong>Key operational lesson:</strong> the app's <code>versionName</code> (e.g. "3.0.0") is
+identical across many build numbers — it does <em>not</em> distinguish which actual build a device
+is running. The only reliable way to confirm which build a test device has is:
+<pre>adb shell dumpsys package com.iemaai.app | grep -E "versionCode|lastUpdateTime|firstInstallTime"</pre>
+This was used repeatedly during this project to catch a device silently running the public
+Production release (build 30) instead of the intended Internal Testing build, even after using the
+official opt-in link — caused by testing-track propagation/serving delay on Google's side. A full
+uninstall + device restart + re-opt-in resolved it.
+</div>
+
+<h3>4.3 Release process used throughout</h3>
+<ol>
+<li><code>eas build --platform android --profile production</code> — builds the <code>.aab</code>.</li>
+<li>Download the <code>.aab</code> from the EAS build artifact URL (files were routinely 55–60&nbsp;MB,
+too large for direct browser-automation upload — always downloaded and uploaded manually via the
+Play Console UI).</li>
+<li>Play Console → <em>Test and release → Internal testing → Releases → Create new release</em> →
+attach the bundle (via "Add from library" once uploaded) → resolve the (harmless, recurring)
+"no deobfuscation file" warning → Save and publish.</li>
+<li>Verify via adb that the test device actually picked up the new <code>versionCode</code> before
+retesting.</li>
+</ol>
+
+<h2 id="appstore">5. App Store Connect Configuration</h2>
+<ul>
+<li>App "IEMA AI", Apple ID <code>6755818728</code>, bundle ID <code>com.iemaai.app</code>, under the
+"IEM AMERICA CORPORATION" Apple Developer account (Team ID <code>7LPHSQQ26S</code>).</li>
+<li>Subscription group <code>IEMA_AI_PLANS</code> (ID <code>22244403</code>) contains all 4
+subscriptions (<code>iema.pro.monthly</code>, <code>iema.pro.annual</code>, <code>iema.team.monthly</code>,
+<code>iema.team.annual</code>), all in "In Review" status at various points — which is normal and
+does <em>not</em> block Sandbox testing per Apple's own policy.</li>
+<li>Distribution credentials (Distribution Certificate + Provisioning Profile) were already configured
+in EAS and valid through December 2026 — no certificate work was needed.</li>
+</ul>
+
+<h2 id="codechanges">6. Mobile Code Changes</h2>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><span class="file-path">app.json</span> → <span class="file-path">app.config.js</span></td>
+<td>Converted to dynamic config so RevenueCat keys could be read from <code>process.env</code> into <code>extra</code>.</td></tr>
+<tr><td><span class="file-path">src/services/revenuecat.js</span></td>
+<td>Enabled Android (previously iOS-only gate); reads both SDK keys via <code>Constants.expoConfig.extra</code>.</td></tr>
+<tr><td><span class="file-path">src/services/iap.js</span></td>
+<td>Migrated to <code>expo-iap</code>'s v3 "unified" API — see §7 for the full bug list.</td></tr>
+<tr><td><span class="file-path">src/screens/BillingScreen.js</span></td>
+<td>Fixed a stale <code>p.productId</code> field check (see §7.3); fixed a stale <code>app.json</code> reference in an error string.</td></tr>
+<tr><td><span class="file-path">src/api.js</span></td>
+<td>Updated an error message referencing the old <code>app.json</code> path.</td></tr>
+<tr><td><span class="file-path">eas.json</span></td>
+<td>Added <code>submit.production.android.track = "internal"</code> and <code>submit.production.ios.ascAppId</code> so <code>eas submit</code> works non-interactively for both platforms.</td></tr>
+</table>
+
+<h2 id="bugs">7. Root-Cause Bugs Found &amp; Fixed</h2>
+<p>This was the most significant finding of the whole project. Every single "Product not found" test
+failure — on <em>both</em> platforms, across many rounds of Play Console pricing/country/tester
+fixes — turned out to have <strong>nothing to do with store configuration</strong>. The
+<code>expo-iap</code> dependency had been upgraded to <code>~3.0.0</code>, which ships a completely
+rewritten "unified" API, and the app's <code>iap.js</code> was never updated to match. Three distinct
+API-shape mismatches were silently throwing and being swallowed by broad <code>try/catch</code>
+blocks, which is why every failure looked identical ("Product not found") regardless of the actual
+cause.</p>
+
+<h3>7.1 <code>getSubscriptions</code> no longer exists <span class="badge both">Both platforms</span></h3>
+<div class="box bug">
+<strong>Bug:</strong> <code>loadSubscriptions()</code> called
+<code>iap.getSubscriptions({ skus: SUB_PRODUCT_IDS })</code>. This method does not exist on
+<code>expo-iap@~3.0.0</code> — it throws <code>TypeError: undefined is not a function</code>,
+caught by an empty <code>catch { return [] }</code>, so the app always believed the store returned
+zero products.
+</div>
+<div class="box fix">
+<strong>Fix:</strong> replaced with the new unified query:
+<pre><code>_subscriptions = (await iap.fetchProducts({ skus: SUB_PRODUCT_IDS, type: 'subs' })) || [];</code></pre>
+(The <code>|| []</code> guards against the documented <code>null</code> return case.)
+</div>
+
+<h3>7.2 Android offer-token field renamed <span class="badge android">Android</span></h3>
+<div class="box bug">
+<strong>Bug:</strong> the base-plan offer lookup used the old field name
+<code>product?.subscriptionOfferDetails?.[0]?.offerToken</code>. In the new API this field is
+<code>subscriptionOfferDetailsAndroid</code>. Additionally, <code>requestPurchase</code>'s
+<code>type: 'subs'</code> variant now requires a top-level <code>willAutoRenew: boolean</code> field
+that wasn't being sent.
+</div>
+<div class="box fix">
+<strong>Fix:</strong>
+<pre><code>const offerToken = product?.subscriptionOfferDetailsAndroid?.[0]?.offerToken;
+return iap.requestPurchase({
+  request: { android: { skus: [sku], ...(offerToken ? { subscriptionOffers: [{ offerToken }] } : {}) } },
+  type: 'subs',
+  willAutoRenew: true,
+});</code></pre>
+</div>
+
+<h3>7.3 Stale <code>productId</code> field check in the UI <span class="badge both">Both platforms</span></h3>
+<div class="box bug">
+<strong>Bug:</strong> <code>Product</code>/<code>ProductSubscription</code> objects in the new API use
+an <code>id</code> field for the SKU, not <code>productId</code> (that name is reserved for
+<em>Purchase</em> objects, which are a different type and unaffected). <code>BillingScreen.js</code>'s
+availability check <code>iapProducts.some((p) =&gt; p.productId === sku)</code> could never match,
+even once <code>fetchProducts</code> was fixed.
+</div>
+<div class="box fix">
+<strong>Fix:</strong> <code>iapProducts.some((p) =&gt; p.id === sku || p.productId === sku)</code>
+(checks both, defensively).
+</div>
+
+<h3>7.4 iOS receipt format changed <span class="badge ios">iOS</span></h3>
+<div class="box bug">
+<strong>Bug:</strong> <code>verifyPurchase()</code>'s iOS branch read
+<code>purchase?.jwsRepresentation || purchase?.transactionReceipt</code> — <strong>both fields have
+been removed</strong> from the <code>Purchase</code> type in the new API, unified into a single
+<code>purchaseToken</code> field (which on iOS carries the StoreKit&nbsp;2 JWS representation).
+Sending that JWS token to the backend's Apple <code>verifyReceipt</code> endpoint would <em>not</em>
+have worked either way — that legacy Apple endpoint expects the classic base64 receipt blob, a
+different format entirely from a StoreKit 2 JWS.
+</div>
+<div class="box fix">
+<strong>Fix:</strong> rather than reading anything off the <code>purchase</code> object, the classic
+receipt is now fetched directly via a dedicated query the library still exposes for this exact
+purpose:
+<pre><code>const iap = loadIap();
+const receipt = await iap?.getReceiptDataIOS?.();
+if (!receipt) return { ok: false, error: 'no iOS receipt' };
+const { data } = await api.post('/payments/iap/apple/verify', { receipt });</code></pre>
+This required no backend changes — the backend's legacy-format expectation is satisfied without
+migrating to Apple's newer JWS-based App Store Server API.
+</div>
+
+<h2 id="w9">8. The Apple W-9 Tax ID Conflict</h2>
+<p>Independent of the code bugs above, iOS testing was blocked for a period by an Apple-side account
+issue: submitting a U.S. Form W-9 for IEM AMERICA CORPORATION under
+<em>Business → Agreements, Tax, and Banking</em> failed with:</p>
+<pre>"The Tax ID entered already exists."</pre>
+<p>This is a backend Apple conflict (a duplicate EIN record somewhere in Apple's systems), not fixable
+from the App Store Connect UI. It was escalated via <strong>Contact Us About Financial Information</strong>
+(Category: <em>Tax information submissions</em>) at <code>developer.apple.com/contact/finance/</code>,
+referencing the exact error, the account, and confirming no other Apple Developer account exists for
+this entity/EIN. Apple resolved it; the W-9 was later resubmitted successfully, unblocking product
+resolution on the App&nbsp;Store side.</p>
+
+<h2 id="release">9. Build &amp; Release Process</h2>
+<h3>9.1 Commands used</h3>
+<pre>cd supercreater-ai-frontend/mobile
+
+# Android — build only (manual upload to Play Console afterward)
+npx eas build --platform android --profile production
+
+# Android — build + auto-submit to a specific track (once eas.json.submit.android.track is set)
+npx eas build --platform android --profile production --auto-submit
+
+# iOS — build + auto-submit to TestFlight (once eas.json.submit.ios.ascAppId is set)
+npx eas build --platform ios --profile production --auto-submit</pre>
+
+<h3>9.2 <code>eas.json</code> submit configuration added</h3>
+<pre><code>"submit": {
+  "production": {
+    "android": { "track": "internal" },
+    "ios": { "ascAppId": "6755818728" }
+  }
+}</code></pre>
+<p class="small">Before this was added, <code>eas submit</code> for both platforms failed
+non-interactively with a credentials-setup prompt it couldn't resolve unattended
+("Google Service Account Keys cannot be set up in --non-interactive mode" / "Set ascAppId in the
+submit profile"). Adding the explicit config values fixed both.</p>
+
+<h3>9.3 A build-environment pitfall: <code>expo-doctor</code></h3>
+<div class="box bug">
+A one-off <code>expo-doctor</code> dev-dependency install (added purely for local diagnostics) broke
+the very next EAS Android build: <code>expo-doctor@1.20.1</code> requires Node
+<code>^20.19.4</code>, but the EAS build worker image runs Node <code>20.19.2</code> — just under the
+minimum — which failed the whole <code>yarn install --frozen-lockfile</code> step.
+</div>
+<div class="box fix">
+Removed via <code>yarn remove expo-doctor</code>. Lesson: dev tools added for local-only diagnostics
+should be run via <code>npx</code> rather than persisted to <code>package.json</code> if there's any
+chance their engine requirements diverge from the CI/build image.
+</div>
+<p class="small">Separately, a stray <code>package-lock.json</code> (this project is yarn-managed per
+its README/LAUNCH_GUIDE) was found committed alongside <code>yarn.lock</code> from an earlier,
+unrelated <code>npm install</code>. It was removed to prevent a repeat of an incident during this
+project where running <code>npm install</code> locally silently rewrote <code>yarn.lock</code>.</p>
+
+<h2 id="testing">10. Testing &amp; Verification Journey</h2>
+<p>A condensed timeline of the debugging path, since the same symptom ("Product not found") had several
+unrelated causes layered on top of each other:</p>
+<ol>
+<li><strong>iOS, first attempt:</strong> "Product not found" for all 4 products → traced to the
+Apple W-9 tax form being incomplete (§8) → escalated to Apple Support.</li>
+<li><strong>Android, first attempt (build 32):</strong> same error → traced to all 4 Play Console base
+plans being India-only → expanded to 177 countries (§4.1).</li>
+<li><strong>Android, second attempt:</strong> same error again, even after the pricing fix and a long
+wait for propagation, and after clearing the Play Store app's cache/data → real root cause was the
+<code>expo-iap</code> API mismatch (§7), confirmed by adding temporary
+<code>console.log</code> instrumentation and reading it live via <code>adb logcat</code>.</li>
+<li><strong>A version-tracking detour:</strong> partway through, the test device was found to be
+silently running the public Production build (versionCode 30) instead of the intended Internal
+Testing build, despite using the correct opt-in link — versionName alone couldn't reveal this;
+<code>adb shell dumpsys package</code> was needed to confirm the real installed versionCode each
+time before trusting a test result.</li>
+<li><strong>Android, after the real fix (build 35):</strong> logs showed
+<code>com.android.billingclient.api.ProxyBillingActivity</code> actually launching — the genuine
+Google Play purchase confirmation screen — confirming <code>fetchProducts</code> and
+<code>requestPurchase</code> now worked end-to-end. RevenueCat's observer picked up the billing event
+in real time.</li>
+<li><strong>iOS, after Apple cleared the W-9 and the same code fix shipped (build 56):</strong>
+subscription purchase completed successfully.</li>
+</ol>
+
+<h3>10.1 Useful debugging commands</h3>
+<pre># Confirm the real installed build on a test device (versionName is NOT reliable — same across many builds)
+adb shell dumpsys package com.iemaai.app | grep -E "versionCode|versionName|lastUpdateTime|firstInstallTime"
+
+# Live-tail the relevant billing/JS logs while reproducing a purchase
+adb logcat -c   # clear buffer first
+# ... reproduce the purchase attempt on-device ...
+adb logcat -d | grep -iE "ReactNativeJS|OpenIapModule|BillingClient|BillingResult"
+
+# Fetch a failed EAS build's full log (Brotli-compressed) directly from its signed GCS URL
+eas build:view &lt;build-id&gt; --json   # extract the logFiles[0] signed URL
+curl -sL "&lt;signed-url&gt;" -o log.br &amp;&amp; brotli -d log.br -o log.txt</pre>
+
+<h2 id="outcome">11. Final Outcome</h2>
+<table>
+<tr><th>Platform</th><th>Product resolution</th><th>Purchase flow</th><th>RevenueCat observer</th><th>Backend crediting</th></tr>
+<tr><td><span class="badge ios">iOS</span></td><td><span class="badge fixed">Working</span></td><td><span class="badge fixed">Working</span></td><td><span class="badge fixed">Working</span></td><td>Verified via <code>getReceiptDataIOS()</code> → <code>/payments/iap/apple/verify</code></td></tr>
+<tr><td><span class="badge android">Android</span></td><td><span class="badge fixed">Working</span></td><td><span class="badge fixed">Working</span></td><td><span class="badge fixed">Working</span></td><td>Verified via Google Play purchase token → <code>/payments/iap/google/verify</code></td></tr>
+</table>
+<p>Both platforms now correctly resolve all 4 subscription products, launch the native store purchase
+UI, are observed by RevenueCat in Observer Mode, and route through the existing backend
+verify-and-credit endpoints with no backend changes required.</p>
+
+<h2 id="reference">12. Quick Reference</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Bundle / Package ID</td><td><code>com.iemaai.app</code></td></tr>
+<tr><td>Apple App Store Connect ID</td><td><code>6755818728</code></td></tr>
+<tr><td>Google Play Console developer account</td><td>IEM AMERICA (Account ID <code>8442286855810146891</code>)</td></tr>
+<tr><td>RevenueCat project</td><td>IEMA AI</td></tr>
+<tr><td>RevenueCat webhook URL</td><td><code>https://api.iema.ai/api/payments/webhook/revenuecat</code></td></tr>
+<tr><td>Play Console Internal Testing opt-in link</td><td><code>https://play.google.com/apps/internaltest/4701077222515641814</code></td></tr>
+<tr><td>Subscription product IDs</td><td><code>iema.pro.monthly</code>, <code>iema.pro.annual</code>, <code>iema.team.monthly</code>, <code>iema.team.annual</code></td></tr>
+<tr><td>expo-iap version</td><td><code>~3.0.0</code> (unified API — see §7 before touching <code>iap.js</code> again)</td></tr>
+</table>
+
+<hr>
+<p class="small">Generated as part of the RevenueCat / Android &amp; iOS subscription rollout for
+IEMA.ai. For anything not covered here, the authoritative sources are: RevenueCat dashboard →
+project "IEMA AI"; Google Play Console → app "IEMA AI"; App Store Connect → app "IEMA AI"; and
+<span class="file-path">IEMA_AI_API_V3/services/payments_service.py</span> for backend logic.</p>
+
+</body>
+</html>
