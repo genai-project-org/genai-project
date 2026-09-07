@@ -1,5 +1,5 @@
 /**
- * IAP bridge — uses **expo-iap@~3.0.0** (Expo Module, StoreKit 2 on iOS +
+ * IAP bridge — uses **expo-iap@~3.4.13** (Expo Module, StoreKit 2 on iOS +
  * Google Play Billing v6 on Android). API is provider-agnostic so the rest
  * of the app (BillingScreen, backend receipt endpoints) is unchanged.
  *

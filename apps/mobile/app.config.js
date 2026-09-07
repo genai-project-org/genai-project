@@ -66,17 +66,20 @@ export default {
       "expo-secure-store",
       "expo-asset",
       "expo-iap",
+      "expo-sharing",
       [
         "expo-build-properties",
         {
           android: {
-            compileSdkVersion: 35,
-            targetSdkVersion: 35
+            compileSdkVersion: 36,
+            targetSdkVersion: 36
           }
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-splash-screen",
+      "expo-status-bar"
     ],
     extra: {
       apiBaseUrl: "https://api.iema.ai",

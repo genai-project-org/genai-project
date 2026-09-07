@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Sparkles, ExternalLink, Play, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = import.meta.env.VITE_BACKEND_URL;
 
 export default function TemplateGallery() {
   const [items, setItems] = useState([]);

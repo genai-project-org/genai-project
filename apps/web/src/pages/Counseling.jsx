@@ -258,7 +258,7 @@ export default function Counseling() {
         <div className="max-w-3xl mx-auto space-y-4" data-testid="counseling-thread">
           {messages.length === 0 && (
             <img
-              src={`${process.env.PUBLIC_URL}/${activeMode.hero}`}
+              src={`/${activeMode.hero}`}
               alt={`${activeMode.label} — start a private conversation`}
               className="w-full rounded-2xl border border-border"
               data-testid="counseling-empty-hero"
