@@ -35,7 +35,6 @@ IMPERSONATION_SYSTEM = (
 async def check_impersonation_risk(prompt: str) -> Optional[str]:
     """Returns a user-facing block reason, or None if the prompt looks safe."""
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"studio-mod-{uuid.uuid4().hex[:8]}",
         system_message=IMPERSONATION_SYSTEM,
     ).with_model("openai", "gpt-5-nano")
@@ -51,7 +50,6 @@ async def check_impersonation_risk(prompt: str) -> Optional[str]:
     return None
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 SUMMARIZE_SYSTEM = (
     "You are a concise summarizer. Produce structured markdown with: "
@@ -80,7 +78,6 @@ async def summarize_text(session_id: str, text: str, style: str = "default", use
         system_prompt += " Tone: crisp executive brief. Focus on business impact."
 
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=with_capability(system_prompt),
     )

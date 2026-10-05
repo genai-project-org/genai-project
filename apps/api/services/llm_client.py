@@ -1,15 +1,14 @@
-"""Drop-in replacement for the `emergentintegrations.llm.*` API surface.
+"""LLM client — talks to Anthropic and OpenAI directly via their native SDKs.
 
-Talks to Anthropic and OpenAI directly via their native SDKs instead of routing
-through the Emergent proxy. Routing is by the `provider` string passed to
-`LlmChat.with_model(provider, model)`:
+Routing is by the `provider` string passed to `LlmChat.with_model(provider, model)`:
 
     "anthropic" -> ANTHROPIC_API_KEY
     "openai"    -> OPENAI_API_KEY
+    "google"    -> GEMINI_API_KEY (via its OpenAI-compatible endpoint)
 
-The `api_key=` argument that call sites still pass (the old, now-empty
-`EMERGENT_LLM_KEY`) is accepted and ignored — real keys come from the per-provider
-env vars above.
+`LlmChat`'s `api_key=` constructor argument is accepted for backward
+compatibility with older call sites but ignored — real keys always come from
+the per-provider env vars above.
 """
 import os
 import base64
@@ -52,7 +51,7 @@ def _openai_client(provider: str) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=_require_key("openai"))
 
 
-# ---- emergent-compatible message types -----------------------------------
+# ---- chat message types ---------------------------------------------------
 
 @dataclass
 class ImageContent:
@@ -71,7 +70,7 @@ class TextDelta:
 
 
 class StreamDone:
-    """Terminal streaming event (marker only, matches emergent's sentinel)."""
+    """Terminal streaming event marker."""
 
 
 # ---- helpers --------------------------------------------------------------
@@ -197,6 +196,39 @@ class LlmChat:
             if delta:
                 yield TextDelta(content=delta)
         yield StreamDone()
+
+    # -- tool-use (Anthropic only) --
+
+    async def create_with_tools(self, messages: list, tools: list,
+                                 system: Optional[str] = None, max_tokens: Optional[int] = None):
+        """One raw Anthropic `messages.create()` call with tool-use enabled.
+
+        Anthropic-only: Mock Interview's agent loop (services/interview_agent.py)
+        is the one place in this codebase stateful/complex enough that
+        cross-provider failover — which would mean translating an in-flight
+        tool-call transcript between Anthropic's and OpenAI's very different
+        tool-calling wire formats — isn't worth building. This mirrors
+        practice_ai_service.generate_variant()'s existing precedent of
+        hardcoding "anthropic" for its own multi-step LLM flow.
+
+        Returns the raw Anthropic `Message`; callers inspect `.content` for
+        `tool_use` blocks and `.stop_reason` themselves. This method makes
+        exactly one call and does not loop — looping/tool-execution is the
+        caller's responsibility, since only the caller knows how to run its
+        own tools.
+        """
+        if self.provider != "anthropic":
+            raise NotImplementedError(
+                "Tool-use is Anthropic-only in this codebase — see LlmChat.create_with_tools."
+            )
+        client = AsyncAnthropic(api_key=_require_key("anthropic"))
+        return await client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens or self.max_tokens,
+            system=system if system is not None else (self.system or None),
+            messages=messages,
+            tools=tools,
+        )
 
 
 # ---- image generation ------------------------------------------------------

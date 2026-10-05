@@ -1,0 +1,18 @@
+{
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "apps/web/dist/**": true,
+    "apps/web/build/**": true,
+    "apps/api/uploads/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "apps/web/dist": true,
+    "apps/web/build": true
+  },
+  "files.exclude": {
+    "**/node_modules": false
+  }
+}

@@ -23,7 +23,6 @@ from services.provider_selector import pick_provider
 
 logger = logging.getLogger(__name__)
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 # Input caps. Truncated in code, never via Form(max_length=) — a 422 detail is a *list*,
 # and api.js only unwraps dict details, so the user would just see "Request failed".
@@ -158,7 +157,6 @@ async def analyze(
         parts.append(f"JOB DESCRIPTION:\n{job_description}")
 
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"resume-{(user_id or 'anon')[:12]}",
         system_message=with_capability(SYSTEM_PROMPT),
     )

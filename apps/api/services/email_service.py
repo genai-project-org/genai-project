@@ -107,6 +107,21 @@ def reset_otp_template(name: str, otp: str) -> str:
 
 
 
+def career_digest_template(name: str, jobs: list) -> str:
+    rows = "".join(f"""
+      <tr><td style="padding:12px 0;border-bottom:1px solid #26262e">
+        <a href="{j.get('job_url','')}" style="color:#3b82f6;text-decoration:none;font-weight:500">{j.get('title','')}</a>
+        <div style="color:#71717a;font-size:13px;margin-top:2px">{j.get('company') or ''}{' · ' + j.get('location') if j.get('location') else ''}</div>
+        {f'<div style="color:#a1a1aa;font-size:13px;margin-top:4px">{j.get("fit_score")}% fit — {j.get("fit_reason","")}</div>' if j.get('fit_score') is not None else ''}
+      </td></tr>""" for j in jobs)
+    body = f"""<p style="color:#a1a1aa;line-height:1.6">Hi {name},</p>
+<p style="color:#a1a1aa;line-height:1.6">Found <b style="color:#3b82f6">{len(jobs)} new job{'s' if len(jobs) != 1 else ''}</b> matching your Career Pipeline profile today:</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0">{rows}</table>
+<div style="margin:24px 0"><a href="{APP_URL}/career" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:500">View in Career Pipeline</a></div>
+<p style="color:#71717a;font-size:13px;line-height:1.6">Turn off daily emails any time from the Pipeline tab.</p>"""
+    return _wrap("New job matches", body)
+
+
 def welcome_template(name: str) -> str:
     body = f"""<p style="color:#a1a1aa;line-height:1.6">Hi {name},</p>
 <p style="color:#a1a1aa;line-height:1.6">Welcome to IEMA.ai — one workspace to think, learn, build and grow with AI. You've been credited with <b style="color:#3b82f6">100 welcome credits</b> to start, plus <b>20 free credits every day</b>.</p>

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from bson import ObjectId
 import razorpay
 from auth import get_current_user
-from db import credit_packs_col, payment_transactions_col, now_iso
+from db import credit_packs_col, interview_packs_col, payment_transactions_col, now_iso
 from models import (
     RazorpayOrderRequest, RazorpayVerifyRequest,
     PaymentTransaction, User
@@ -20,6 +20,7 @@ from services.credit_service import add_credits
 from services.notification_service import notify
 from services.payments_service import get_usd_to_inr, round_up_inr
 from services.discount_service import validate as validate_discount, increment_use
+from services import interview_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -30,11 +31,15 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 _razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if RAZORPAY_KEY_ID else None
 
 
-async def _get_pack(slug: str, currency: str = None) -> dict:
+async def _get_pack(slug: str, currency: str = None, kind: str = "credits") -> dict:
+    # "credits" packs top up the wallet; "interview_sessions" packs grant Mock
+    # Interview entitlements — the two catalogs (and what buying one gets you)
+    # are deliberately kept non-fungible, see models.py's pack_kind field.
+    col = interview_packs_col if kind == "interview_sessions" else credit_packs_col
     query = {"slug": slug, "is_visible": True}
     if currency:
         query["currency"] = currency
-    doc = await credit_packs_col.find_one(query)
+    doc = await col.find_one(query)
     if not doc:
         raise HTTPException(404, "Pack not found")
     doc["id"] = str(doc.pop("_id"))
@@ -43,6 +48,32 @@ async def _get_pack(slug: str, currency: str = None) -> dict:
 
 # ================= STRIPE (removed) =================
 # All Stripe endpoints were removed. Razorpay is the sole web payment provider.
+
+
+async def _fulfill_pack(user_id: str, tx_doc: dict, tx: PaymentTransaction, ref_id: str) -> Optional[float]:
+    """Credits the wallet OR grants Mock Interview sessions depending on the
+    transaction's pack_kind, and notifies the user. Returns the new wallet
+    balance (credits packs) or None (interview packs — entitlements don't have
+    a comparable single "balance" number the sidebar displays)."""
+    metadata = tx_doc.get("metadata") or {}
+    pack_kind = metadata.get("pack_kind", "credits")
+    if pack_kind == "interview_sessions":
+        # Reconstruct a pack-shaped dict from the config SNAPSHOT taken at
+        # order-creation time (not a fresh DB lookup) — so a later admin edit
+        # to the live pack can never change what this specific purchase
+        # promised. See interview_service.grant_sessions()'s own docstring.
+        pack_snapshot = {"slug": tx.pack_slug, "name": metadata.get("pack_name"), "config": metadata.get("pack_config")}
+        await interview_service.grant_sessions(
+            user_id, int(tx.credits), pack=pack_snapshot, tx_type="purchase", ref_id=ref_id,
+            description=f"Purchase: {tx.pack_slug}",
+        )
+        await notify(user_id, "Purchase successful",
+                     f"{int(tx.credits)} mock interview sessions added to your account.", kind="purchase")
+        return None
+    wallet = await add_credits(user_id, tx.credits, bucket="purchased", kind="purchase",
+                               description=f"Purchase: {tx.pack_slug}", ref_id=ref_id)
+    await notify(user_id, "Purchase successful", f"{int(tx.credits)} credits added to your wallet.", kind="purchase")
+    return wallet.total
 
 
 # ================= RAZORPAY (Payment Links — domain-agnostic, hosted on rzp.io) =================
@@ -54,7 +85,7 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
     before the merchant has approved us as an additional website."""
     if not _razorpay_client:
         raise HTTPException(501, "Razorpay not configured")
-    pack = await _get_pack(req.pack_slug, "usd")
+    pack = await _get_pack(req.pack_slug, "usd", req.pack_kind)
     price_usd = float(pack["price"])
     discount = None
     if req.discount_code:
@@ -65,7 +96,12 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         discount = {"code": req.discount_code.upper(), "discount_usd": d["discount_usd"]}
     fx_rate = await get_usd_to_inr()
     amount_paise = round_up_inr(price_usd * fx_rate) * 100
-    credits_val = float(pack["credits"] + pack.get("bonus_credits", 0))
+    is_interview_pack = req.pack_kind == "interview_sessions"
+    # `credits` on the transaction row is repurposed to hold "sessions granted"
+    # for an interview pack — the crediting branch below reads pack_kind to
+    # know which unit it is, never conflating the two.
+    credits_val = float(pack["sessions_included"]) if is_interview_pack else float(pack["credits"] + pack.get("bonus_credits", 0))
+    unit_label = "mock interview sessions" if is_interview_pack else "credits"
     origin = str(request.headers.get("origin") or request.headers.get("referer") or "").rstrip("/") \
              or os.environ.get("APP_URL", "").rstrip("/")
     callback = f"{origin}/payment-success?provider=razorpay"
@@ -79,7 +115,7 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         "currency": "INR",
         "accept_partial": False,
         "reference_id": ref_id,
-        "description": f"IEMA.ai — {pack['name']} ({int(credits_val)} credits, ${price_usd:.2f} USD"
+        "description": f"IEMA.ai — {pack['name']} ({int(credits_val)} {unit_label}, ${price_usd:.2f} USD"
                        + (f", code {discount['code']}" if discount else "") + ")",
         "customer": {
             "name": user.name or user.email.split("@")[0],
@@ -88,7 +124,7 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         "notify": {"sms": False, "email": True},
         "reminder_enable": False,
         "notes": {
-            "user_id": user.id, "pack_slug": req.pack_slug,
+            "user_id": user.id, "pack_slug": req.pack_slug, "pack_kind": req.pack_kind,
             "usd_price": str(price_usd), "credits": str(credits_val),
         },
         "callback_url": callback,
@@ -103,7 +139,8 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
         credits=credits_val,
         order_id=link["id"],   # store payment_link_id here
         status="initiated",
-        metadata={"user_id": user.id, "pack_slug": req.pack_slug,
+        metadata={"user_id": user.id, "pack_slug": req.pack_slug, "pack_kind": req.pack_kind,
+                  "pack_name": pack.get("name"), "pack_config": pack.get("config") if is_interview_pack else None,
                   "reference_id": ref_id, "amount_paise": amount_paise,
                   "fx_rate": fx_rate, "short_url": link.get("short_url"),
                   "discount": discount},
@@ -139,16 +176,11 @@ async def razorpay_link_status(link_id: str, user: User = Depends(get_current_us
     status = link.get("status")  # 'created' | 'partially_paid' | 'paid' | 'cancelled' | 'expired'
     balance = None
     if status == "paid" and not tx.credited:
-        wallet = await add_credits(user.id, tx.credits, bucket="purchased", kind="purchase",
-                                   description=f"Purchase: {tx.pack_slug}",
-                                   ref_id=link_id)
-        balance = wallet.total
+        balance = await _fulfill_pack(user.id, tx_doc, tx, link_id)
         await payment_transactions_col.update_one(
             {"order_id": link_id},
             {"$set": {"status": "paid", "credited": True, "updated_at": now_iso()}},
         )
-        await notify(user.id, "Purchase successful",
-                     f"{int(tx.credits)} credits added to your wallet.", kind="purchase")
         dc = (tx_doc.get("metadata") or {}).get("discount")
         if dc and dc.get("code"):
             await increment_use(dc["code"])
@@ -184,13 +216,11 @@ async def verify_razorpay(req: RazorpayVerifyRequest, user: User = Depends(get_c
 
     balance = None
     if not tx.credited:
-        wallet = await add_credits(user.id, tx.credits, bucket="purchased", kind="purchase", description=f"Purchase: {tx.pack_slug}", ref_id=req.razorpay_payment_id)
-        balance = wallet.total
+        balance = await _fulfill_pack(user.id, tx_doc, tx, req.razorpay_payment_id)
         await payment_transactions_col.update_one(
             {"order_id": req.razorpay_order_id},
             {"$set": {"status": "paid", "credited": True, "payment_id": req.razorpay_payment_id, "updated_at": now_iso()}},
         )
-        await notify(user.id, "Purchase successful", f"{int(tx.credits)} credits added to your wallet.", kind="purchase")
         dc = (tx_doc.get("metadata") or {}).get("discount")
         if dc and dc.get("code"):
             await increment_use(dc["code"])

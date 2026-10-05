@@ -1,12 +1,19 @@
-﻿import { useState } from 'react';
+﻿import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Loader2, Briefcase, MapPin, IndianRupee, ExternalLink, GraduationCap, Sparkles } from 'lucide-react';
+import {
+  Loader2, Briefcase, MapPin, IndianRupee, ExternalLink, GraduationCap, Sparkles, Users,
+  MessagesSquare, ChevronRight,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import Pipeline from '@/pages/career/Pipeline';
+import { ACTIVE_STATUSES, STATUS_LABEL, TOPIC_META } from '@/pages/interview/interviewUtils';
 
 export default function Career() {
   return (
@@ -26,10 +33,68 @@ export default function Career() {
         <TabsList>
           <TabsTrigger value="jobs" data-testid="career-tab-jobs"><Briefcase className="h-4 w-4 mr-2" />Jobs</TabsTrigger>
           <TabsTrigger value="path" data-testid="career-tab-path"><GraduationCap className="h-4 w-4 mr-2" />Learning Path</TabsTrigger>
+          <TabsTrigger value="pipeline" data-testid="career-tab-pipeline"><Users className="h-4 w-4 mr-2" />Pipeline</TabsTrigger>
         </TabsList>
         <TabsContent value="jobs"><Jobs /></TabsContent>
         <TabsContent value="path"><LearningPath /></TabsContent>
+        <TabsContent value="pipeline"><Pipeline /></TabsContent>
       </Tabs>
+      <RecentMockInterviews />
+    </div>
+  );
+}
+
+function RecentMockInterviews() {
+  const navigate = useNavigate();
+  const [sessions, setSessions] = useState(null); // null = loading
+  const [scores, setScores] = useState({}); // { sessionId: overall_score }
+
+  useEffect(() => {
+    api.get('/interview/sessions?limit=3')
+      .then(async (r) => {
+        const items = r.data.items || [];
+        setSessions(items);
+        // Best-effort: only the ~3 sessions shown here, and only ones with a
+        // finished report — never blocks rendering the list itself.
+        const withReport = items.filter((s) => s.final_report_id);
+        const results = await Promise.all(withReport.map((s) =>
+          api.get(`/interview/sessions/${s.id}/report`).then((res) => [s.id, res.data]).catch(() => [s.id, null])));
+        const map = {};
+        for (const [id, data] of results) if (data?.status === 'ready') map[id] = data.overall_score;
+        setScores(map);
+      })
+      .catch(() => setSessions([]));
+  }, []);
+
+  if (sessions === null || sessions.length === 0) return null;
+
+  return (
+    <div className="mt-8 rounded-lg border border-border bg-card p-5" data-testid="career-recent-interviews">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-1.5 font-medium">
+          <MessagesSquare className="h-4 w-4 text-primary" /> Recent Mock Interviews
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => navigate('/interview')}>View all</Button>
+      </div>
+      <div className="divide-y divide-border">
+        {sessions.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => navigate(ACTIVE_STATUSES.includes(s.status) ? `/interview/${s.id}` : `/interview/${s.id}/report`)}
+            className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-accent/50 transition-colors rounded-md px-2 -mx-2"
+            data-testid={`career-recent-interview-${s.id}`}
+          >
+            <Badge variant="outline">{TOPIC_META[s.topic]?.label || s.topic}</Badge>
+            <span className="text-sm flex-1">
+              {STATUS_LABEL[s.status] || s.status}
+              {scores[s.id] != null && <span className="text-muted-foreground"> · Score {Math.round(scores[s.id])}/100</span>}
+            </span>
+            <span className="text-xs text-muted-foreground">{new Date(s.created_at).toLocaleDateString()}</span>
+            <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

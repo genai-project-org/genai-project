@@ -47,6 +47,11 @@ DEFAULT_PRICING = [
     {"_id": "career_job_search",      "credit_cost": 0,  "provider": "adzuna",    "category": "career",     "description": "Job search (Adzuna)"},
     {"_id": "career_learning_path",   "credit_cost": 5,  "provider": "anthropic", "category": "career",     "description": "Career learning roadmap"},
     {"_id": "resume_analyze",         "credit_cost": 10, "provider": "anthropic", "category": "career",     "description": "Resume ATS analysis"},
+    {"_id": "career_pipeline_analyze", "credit_cost": 5, "provider": "anthropic", "category": "career",     "description": "Job pipeline fit score + outreach draft"},
+    {"_id": "career_tailor_resume",    "credit_cost": 8, "provider": "anthropic", "category": "career",     "description": "Tailored resume tips + cover letter for one job"},
+    {"_id": "career_interview_prep",   "credit_cost": 6, "provider": "anthropic", "category": "career",     "description": "Job-specific interview prep questions"},
+    {"_id": "career_salary_coach",     "credit_cost": 4, "provider": "anthropic", "category": "career",     "description": "Salary negotiation coaching for one job"},
+    {"_id": "career_addon_chat",       "credit_cost": 2, "provider": "anthropic", "category": "career",     "description": "Follow-up question on a career add-on suggestion"},
     {"_id": "counseling_career",      "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Career counseling"},
     {"_id": "counseling_psychology",  "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Wellness counseling"},
     {"_id": "counseling_academic",    "credit_cost": 3,  "provider": "anthropic", "category": "counseling", "description": "Academic counseling"},
@@ -54,6 +59,34 @@ DEFAULT_PRICING = [
     {"_id": "builder_refine",         "credit_cost": 3,  "provider": "anthropic", "category": "builder",    "description": "Code Builder refine"},
     {"_id": "builder_dyn_create",     "credit_cost": 12, "provider": "anthropic", "category": "builder",    "description": "Dynamic Builder project generation"},
     {"_id": "builder_dyn_refine",     "credit_cost": 7,  "provider": "anthropic", "category": "builder",    "description": "Dynamic Builder refine"},
+    {"_id": "practice_submit",        "credit_cost": 2,  "provider": "piston",    "category": "practice",   "description": "Coding practice submission"},
+    {"_id": "practice_ai_feedback",   "credit_cost": 5,  "provider": "anthropic", "category": "practice",   "description": "AI feedback on a failed submission"},
+    {"_id": "practice_variant_generate", "credit_cost": 10, "provider": "anthropic", "category": "practice", "description": "AI-generated problem variant"},
+    # SQL submissions reuse `practice_submit` (same 2-credit cost) — deliberately,
+    # per the SQL/MCQ/Design rollout design: grading a SQL query costs about the
+    # same in server work as grading code (a bounded local execution + a result
+    # comparison), so there's no reason to price it differently.
+    #
+    # MCQ submissions (Logical Reasoning + Computer Networks) are priced at 0 —
+    # NOT a discount, a reflection of actual cost: grading is a single string
+    # equality check against a value already stored on the problem doc. There is
+    # no Piston call and no LLM call, so there is no real compute cost to pass
+    # through, unlike every other priced entry in this table. If MCQ submissions
+    # ever need rate-limiting independent of credits, that's what the plan-level
+    # request window (see check_window/_guard above) is for — not this price.
+    {"_id": "practice_mcq_submit",    "credit_cost": 0,  "provider": "none",      "category": "practice",   "description": "MCQ practice submission (Logical Reasoning / Computer Networks) — trivial equality check, no compute cost"},
+    # Design (LLD/HLD) submissions are the most expensive practice question type:
+    # a real Sonnet call grading a large free-text answer against a multi-criterion
+    # rubric, with max_tokens=16000 (Sonnet 5's extended-thinking default consumes
+    # tokens before visible output — see practice_ai_service.grade_design_submission's
+    # comment). Priced well above practice_variant_generate (10 credits, also a
+    # Sonnet call but a smaller, single-shot generation) since a rubric grading
+    # call both reads and reasons over far more input/output text.
+    {"_id": "practice_design_submit", "credit_cost": 15, "provider": "anthropic", "category": "practice",   "description": "AI-graded system design (LLD/HLD) submission — rubric-based Sonnet grading"},
+    # NOTE: Contest Mode submissions (routers/contest_routes.py) are
+    # deliberately NOT priced here — the hackathon is free-entry by business
+    # decision. Do not add a "contest_submit" entry; see the comment on
+    # submit_contest_solution() in contest_routes.py.
 ]
 
 # Default plans. Free is ONE-TIME (no monthly refill). USD pricing.
@@ -70,7 +103,6 @@ DEFAULT_PLANS = [
 PROVIDER_COST_USD_PER_CREDIT = {
     "anthropic": 0.0015,   # Claude Haiku 4.5
     "openai":    0.005,    # GPT-Image-1 low
-    "emergent":  0.001,
     "adzuna":    0.0,      # free
     "s3":        0.00005,
 }

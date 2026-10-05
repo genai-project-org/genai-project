@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Figma__get_screenshot",
+      "mcp__claude_ai_Figma__get_metadata",
+      "mcp__claude_ai_Figma__get_design_context",
+      "mcp__claude_ai_Figma__whoami",
+      "mcp__claude_ai_Figma__get_variable_defs",
+      "Bash(docker compose ps *)",
+      "Bash(whois *)",
+      "Bash(npm view *)",
+      "Bash(adb logcat -d)",
+      "Bash(./node_modules/.bin/eslint app src e2e --ext .js)"
+    ]
+  }
+}
