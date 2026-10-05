@@ -8,7 +8,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build:android": "eas build --platform android",
-    "build:ios": "eas build --platform ios"
+    "build:ios": "eas build --platform ios",
+    "test": "jest"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -21,12 +22,14 @@
     "expo": "^57.0.20",
     "expo-apple-authentication": "~57.0.1",
     "expo-asset": "~57.0.16",
+    "expo-audio": "~57.0.5",
     "expo-auth-session": "~57.0.11",
     "expo-build-properties": "~57.0.17",
     "expo-clipboard": "~57.0.1",
     "expo-constants": "~57.0.17",
     "expo-crypto": "~57.0.2",
     "expo-dev-client": "~57.0.18",
+    "expo-document-picker": "~57.0.2",
     "expo-file-system": "~57.0.6",
     "expo-font": "~57.0.3",
     "expo-iap": "~3.4.13",
@@ -37,6 +40,7 @@
     "expo-splash-screen": "~57.0.8",
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.2",
+    "lottie-react-native": "~7.3.8",
     "lucide-react-native": "^1.25.0",
     "punycode": "^2.3.1",
     "react": "19.2.3",
@@ -49,12 +53,17 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
     "react-native-svg": "15.15.4",
+    "react-native-vision-camera": "^5.2.3",
+    "react-native-vision-camera-face-detector": "^2.1.0",
     "react-native-worklets": "0.10.1",
     "react-redux": "^9.2.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",
-    "babel-preset-expo": "~57.0.0"
+    "@testing-library/react-native": "13.3.3",
+    "babel-preset-expo": "~57.0.0",
+    "jest-expo": "57.0.5",
+    "react-test-renderer": "19.2.3"
   },
   "private": true
 }

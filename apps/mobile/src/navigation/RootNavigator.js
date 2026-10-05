@@ -16,8 +16,14 @@ import SettingsScreen from "../screens/SettingsScreen";
 import NotificationsScreen from "../screens/NotificationsScreen";
 import StudioScreen from "../screens/StudioScreen";
 import CareerScreen from "../screens/CareerScreen";
+import ContestScreen from "../screens/ContestScreen";
 import BuilderScreen from "../screens/BuilderScreen";
 import CounselingScreen from "../screens/CounselingScreen";
+import InterviewHomeScreen from "../screens/InterviewHomeScreen";
+import InterviewSetupScreen from "../screens/InterviewSetupScreen";
+import InterviewSystemCheckScreen from "../screens/InterviewSystemCheckScreen";
+import InterviewSessionScreen from "../screens/InterviewSessionScreen";
+import InterviewReportScreen from "../screens/InterviewReportScreen";
 import DrawerContent from "../components/DrawerContent";
 
 const Stack = createNativeStackNavigator();
@@ -42,6 +48,18 @@ function ChatStack() {
   );
 }
 
+function InterviewStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="InterviewHome" component={InterviewHomeScreen} />
+      <Stack.Screen name="InterviewSetup" component={InterviewSetupScreen} />
+      <Stack.Screen name="InterviewSystemCheck" component={InterviewSystemCheckScreen} />
+      <Stack.Screen name="InterviewSession" component={InterviewSessionScreen} />
+      <Stack.Screen name="InterviewReport" component={InterviewReportScreen} />
+    </Stack.Navigator>
+  );
+}
+
 function AppDrawer() {
   return (
     <Drawer.Navigator
@@ -53,6 +71,8 @@ function AppDrawer() {
       <Drawer.Screen name="Code Builder" component={BuilderScreen} />
       <Drawer.Screen name="Counseling" component={CounselingScreen} />
       <Drawer.Screen name="Career Intelligence" component={CareerScreen} />
+      <Drawer.Screen name="Mock Interviews" component={InterviewStack} />
+      <Drawer.Screen name="Contest" component={ContestScreen} />
       <Drawer.Screen name="Usage" component={UsageScreen} />
       <Drawer.Screen name="Wallet" component={WalletScreen} />
       <Drawer.Screen name="Billing" component={BillingScreen} />

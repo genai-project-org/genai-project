@@ -9,7 +9,6 @@ from services.capability_manifest import with_capability
 
 logger = logging.getLogger(__name__)
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 DEFAULT_PROVIDER = os.environ.get("DEFAULT_AI_PROVIDER", "anthropic")
 DEFAULT_MODEL = os.environ.get("DEFAULT_AI_MODEL", "claude-haiku-4-5-20251001")
 FALLBACK_PROVIDER = os.environ.get("FALLBACK_AI_PROVIDER", "openai")
@@ -120,11 +119,40 @@ SYSTEM_PROMPT = (
 )
 
 
-def _build_chat(session_id: str, provider: str, model: str) -> LlmChat:
+async def _connector_hint_block(user_id: str) -> str:
+    """Tells the model what third-party services the user *could* connect.
+
+    Only called on the no-tools chat path (routers/chat_routes.py only takes
+    this path when the user has zero enabled connectors — see
+    services.mcp.orchestrator_service.user_has_enabled_connectors), so a user
+    with tools active never sees this; they get the tool-loop's own
+    connector-aware prompt instead (services/mcp/orchestrator_service.py).
+    """
+    from db import mcp_connections_col
+    from services.mcp.registry import connector_catalog_summary
+    connected_ids = {
+        d["connector_id"] async for d in
+        mcp_connections_col.find({"user_id": user_id, "enabled": {"$ne": False}}, {"connector_id": 1})
+    }
+    catalog = connector_catalog_summary(connected_ids)
+    return (
+        "CONNECTABLE THIRD-PARTY SERVICES — this conversation currently has no active tool access. If the "
+        "user asks for something one of these services would do (send a Slack message, check Gmail, create "
+        "a Jira ticket, etc.), tell them plainly to connect it from the Connectors page first — don't pretend "
+        "to do it, refuse vaguely, or ignore the request:\n" + catalog
+    )
+
+
+async def _build_chat(session_id: str, provider: str, model: str, user_id: Optional[str] = None) -> LlmChat:
+    system = with_capability(SYSTEM_PROMPT)
+    if user_id:
+        try:
+            system += "\n\n" + await _connector_hint_block(user_id)
+        except Exception:
+            logger.warning("Failed to build connector hint block", exc_info=True)
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
-        system_message=with_capability(SYSTEM_PROMPT),
+        system_message=system,
     ).with_model(provider, model, max_tokens=max_tokens_for(model))
     return chat
 
@@ -147,10 +175,13 @@ async def stream_ai_response(
     history: List[Dict],
     model_override: Optional[str] = None,
     attachments: Optional[List[Dict]] = None,
+    user_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
     """
     Stream tokens from AI. Yields dicts: {"type": "meta"|"delta"|"done"|"error", ...}
     attachments: list of {"url": ..., "content_type": "image/png"} — fetched and passed as base64.
+    user_id: when given, the system prompt gets a connector-aware hint block (see
+    _connector_hint_block) — optional so other callers of stream_ai_response are unaffected.
     """
     tried = []
     primary = resolve_provider_model(model_override) or (DEFAULT_PROVIDER, DEFAULT_MODEL)
@@ -171,7 +202,7 @@ async def stream_ai_response(
     for provider, model in providers_to_try:
         tried.append(f"{provider}:{model}")
         try:
-            chat = _build_chat(session_id, provider, model)
+            chat = await _build_chat(session_id, provider, model, user_id=user_id)
             prefix = _history_prefix(history)
             final_text = (prefix + "\n\nUser: " + user_message) if prefix else user_message
             um = UserMessage(text=final_text, file_contents=image_contents or None)

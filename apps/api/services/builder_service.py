@@ -20,7 +20,6 @@ from services.settings_service import get_setting
 
 logger = logging.getLogger(__name__)
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 BUILDER_MODEL = os.environ.get("BUILDER_MODEL", "claude-haiku-4-5-20251001")
 # Multi-file React needs a stronger model than Haiku to stay coherent across files.
 BUILDER_DYNAMIC_MODEL = os.environ.get("BUILDER_DYNAMIC_MODEL", "claude-sonnet-5")
@@ -156,7 +155,6 @@ async def generate_project(user_id: str, prompt: str, gate=None, kind: str = "st
     if gate:
         await gate()
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"builder-gen-{key[:10]}",
         system_message=gen_prompt,
     ).with_model("anthropic", model, max_tokens=BUILDER_MAX_TOKENS)
@@ -199,7 +197,6 @@ async def refine_project(existing_files: List[Dict[str, Any]], instruction: str,
         "\n\nInstruction from user:\n" + instruction
     )
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=refine_prompt,
     ).with_model("anthropic", model, max_tokens=BUILDER_MAX_TOKENS)

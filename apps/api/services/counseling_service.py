@@ -17,7 +17,6 @@ from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 COUNSEL_MODEL = os.environ.get("COUNSEL_MODEL", "claude-haiku-4-5-20251001")
 
 SYSTEM_PROMPTS = {
@@ -58,7 +57,6 @@ async def counsel(mode: str, message: str, user_id: Optional[str] = None) -> dic
                             "Knowledge-only mode is on and no cached answer was found. Try rephrasing.")
 
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"counsel-{mode}-{(user_id or 'anon')[:12]}",
         system_message=with_capability(SYSTEM_PROMPTS[mode]),
     )

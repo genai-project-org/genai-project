@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Users as UsersIcon, MessageSquare, Zap, DollarSign, Search, Shield, ShieldOff, Ban, CheckCircle2, Plus, Database, Sliders } from 'lucide-react';
 import { FinancePanel, ProvidersPanel, QueriesPanel, PricingPanel, PlansPanel, DiscountsPanel, SubscriptionsPanel } from './AdminPanels';
@@ -11,6 +13,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { detailToString, TOPIC_META, SENIORITY_LABEL, LANGUAGE_LABEL, summarizePackConfig } from './interview/interviewUtils';
 
 export default function Admin() {
   const [stats, setStats] = useState(null);
@@ -47,6 +50,7 @@ export default function Admin() {
           <TabsTrigger value="discounts" data-testid="admin-tab-discounts">Discounts</TabsTrigger>
           <TabsTrigger value="subs" data-testid="admin-tab-subs">Subscriptions</TabsTrigger>
           <TabsTrigger value="packs">Packs</TabsTrigger>
+          <TabsTrigger value="interview-packs" data-testid="admin-tab-interview-packs">Interview Packs</TabsTrigger>
           <TabsTrigger value="transactions">Transactions</TabsTrigger>
           <TabsTrigger value="kb" data-testid="admin-tab-kb">Data Lake</TabsTrigger>
         </TabsList>
@@ -59,6 +63,7 @@ export default function Admin() {
         <TabsContent value="discounts" className="mt-6"><DiscountsPanel /></TabsContent>
         <TabsContent value="subs" className="mt-6"><SubscriptionsPanel /></TabsContent>
         <TabsContent value="packs" className="mt-6"><PacksPanel /></TabsContent>
+        <TabsContent value="interview-packs" className="mt-6"><InterviewPacksPanel /></TabsContent>
         <TabsContent value="transactions" className="mt-6"><TransactionsPanel /></TabsContent>
         <TabsContent value="kb" className="mt-6"><KnowledgePanel /></TabsContent>
       </Tabs>
@@ -198,6 +203,10 @@ function UsersPanel() {
   const [loading, setLoading] = useState(true);
   const [adjustFor, setAdjustFor] = useState(null);
   const [amount, setAmount] = useState(100);
+  const [grantFor, setGrantFor] = useState(null);
+  const [interviewPacks, setInterviewPacks] = useState([]);
+  const [grantSessions, setGrantSessions] = useState(1);
+  const [grantPackId, setGrantPackId] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -207,6 +216,14 @@ function UsersPanel() {
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
+  // Fetched lazily (not on mount) — this list is only needed once the grant
+  // dialog is actually opened, same "don't pay for what you don't use" spirit
+  // as the rest of this panel.
+  useEffect(() => {
+    if (grantFor && interviewPacks.length === 0) {
+      api.get('/interview-packs/all').then((r) => setInterviewPacks(r.data.items));
+    }
+  }, [grantFor]);
 
   const toggle = async (id) => { await api.post(`/admin/users/${id}/toggle-active`); load(); };
   const promote = async (id) => { await api.post(`/admin/users/${id}/promote`); load(); };
@@ -216,6 +233,19 @@ function UsersPanel() {
       toast.success(`Added ${amount} credits to ${adjustFor.email}`);
       setAdjustFor(null); load();
     } catch { toast.error('Failed'); }
+  };
+  const grant = async () => {
+    try {
+      await api.post('/interview/admin/grant', {
+        user_id: grantFor.id, sessions: grantSessions,
+        pack_id: grantPackId || null,
+        description: grantPackId
+          ? `Admin grant (${interviewPacks.find((p) => p.id === grantPackId)?.name || 'pack'})`
+          : 'Admin grant',
+      });
+      toast.success(`Granted ${grantSessions} mock interview session${grantSessions === 1 ? '' : 's'} to ${grantFor.email}`);
+      setGrantFor(null); setGrantSessions(1); setGrantPackId('');
+    } catch (e) { toast.error(detailToString(e, 'Grant failed')); }
   };
 
   return (
@@ -254,6 +284,7 @@ function UsersPanel() {
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex gap-1">
                       <Button size="sm" variant="ghost" onClick={() => setAdjustFor(u)}>+ Credits</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setGrantFor(u)} data-testid={`admin-user-grant-${u.id}`}>+ Interview</Button>
                       <Button size="sm" variant="ghost" onClick={() => promote(u.id)} title="Toggle admin">
                         {u.role === 'admin' ? <ShieldOff className="h-3.5 w-3.5" /> : <Shield className="h-3.5 w-3.5" />}
                       </Button>
@@ -278,6 +309,36 @@ function UsersPanel() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setAdjustFor(null)}>Cancel</Button>
             <Button onClick={adjust}>Add {amount} credits</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!grantFor} onOpenChange={(o) => !o && setGrantFor(null)}>
+        <DialogContent data-testid="admin-grant-interview-form">
+          <DialogHeader><DialogTitle>Grant mock interview sessions to {grantFor?.email}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label>Sessions</Label>
+              <Input type="number" min={1} value={grantSessions} onChange={(e) => setGrantSessions(Number(e.target.value))} />
+            </div>
+            <div className="space-y-1">
+              <Label>Format (pack config to snapshot)</Label>
+              <select className="h-10 w-full rounded-md border border-input bg-background px-3"
+                      value={grantPackId} onChange={(e) => setGrantPackId(e.target.value)}>
+                <option value="">Default (45+15 min, all topics)</option>
+                {interviewPacks.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} — {summarizePackConfig(p.config)}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                This is a one-time snapshot — editing the pack later won't change sessions already granted.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGrantFor(null)}>Cancel</Button>
+            <Button onClick={grant} data-testid="admin-grant-interview-submit">
+              Grant {grantSessions} session{grantSessions === 1 ? '' : 's'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -454,6 +515,280 @@ function PackFormDialog({ pack, onClose, onSave, busy }) {
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={busy} data-testid="pack-form-save">
               {busy ? 'Saving\u2026' : (pack ? 'Save changes' : 'Create pack')}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const SENIORITY_OPTIONS = Object.keys(SENIORITY_LABEL);
+const LANGUAGE_OPTIONS = Object.keys(LANGUAGE_LABEL);
+const TOPIC_OPTIONS = Object.keys(TOPIC_META);
+
+function InterviewPacksPanel() {
+  const [packs, setPacks] = useState([]);
+  const [editing, setEditing] = useState(null);   // pack row being edited or 'new'
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.get('/interview-packs/all').then((r) => setPacks(r.data.items));
+  useEffect(() => { load(); }, []);
+
+  const save = async (payload, id) => {
+    setBusy(true);
+    try {
+      if (id) await api.patch(`/interview-packs/${id}`, payload);
+      else    await api.post('/interview-packs/', payload);
+      toast.success(id ? 'Pack updated' : 'Pack created');
+      setEditing(null);
+      await load();
+    } catch (e) {
+      toast.error(detailToString(e, 'Save failed'));
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (p) => {
+    if (!window.confirm(`Delete ${p.name} (${p.currency}) — this can’t be undone.`)) return;
+    setBusy(true);
+    try {
+      await api.delete(`/interview-packs/${p.id}`);
+      toast.success('Pack deleted');
+      await load();
+    } catch (e) {
+      toast.error(detailToString(e, 'Delete failed'));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          {packs.length} pack{packs.length !== 1 ? 's' : ''} — each pack's format (durations, topics, languages, sub-topics)
+          is snapshotted onto every purchase, so editing a pack never changes sessions already granted.
+        </p>
+        <Button size="sm" onClick={() => setEditing('new')} data-testid="admin-interview-pack-new-btn">
+          <Plus className="h-4 w-4 mr-1" /> New pack
+        </Button>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-xs uppercase text-muted-foreground border-b border-border">
+              <tr>
+                <th className="text-left px-4 py-2">Name</th>
+                <th className="text-left px-4 py-2">Slug</th>
+                <th className="text-left px-4 py-2">Price</th>
+                <th className="text-left px-4 py-2">Sessions</th>
+                <th className="text-left px-4 py-2">Format</th>
+                <th className="text-left px-4 py-2">Popular</th>
+                <th className="text-left px-4 py-2">Visible</th>
+                <th className="text-left px-4 py-2">Order</th>
+                <th className="text-left px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {packs.map((p) => (
+                <tr key={p.id} className="hover:bg-muted/40">
+                  <td className="px-4 py-3 font-medium">{p.name}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{p.slug}</td>
+                  <td className="px-4 py-3 font-mono">{p.currency === 'usd' ? '$' : '₹'}{p.price}</td>
+                  <td className="px-4 py-3 font-mono">{p.sessions_included}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">{summarizePackConfig(p.config)}</td>
+                  <td className="px-4 py-3">{p.is_popular ? '★' : ''}</td>
+                  <td className="px-4 py-3">{p.is_visible ? '✓' : '—'}</td>
+                  <td className="px-4 py-3 font-mono">{p.sort_order}</td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <Button size="sm" variant="ghost" onClick={() => setEditing(p)}
+                            data-testid={`admin-interview-pack-edit-${p.slug}`}>Edit</Button>
+                    <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600"
+                            onClick={() => remove(p)} disabled={busy}
+                            data-testid={`admin-interview-pack-delete-${p.slug}`}>Delete</Button>
+                  </td>
+                </tr>
+              ))}
+              {packs.length === 0 && (
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
+                  No interview packs — create one to make Mock Interviews purchasable.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {editing && (
+        <InterviewPackFormDialog pack={editing === 'new' ? null : editing}
+                                 onClose={() => setEditing(null)}
+                                 onSave={save} busy={busy} />
+      )}
+    </div>
+  );
+}
+
+function InterviewPackFormDialog({ pack, onClose, onSave, busy }) {
+  const cfg = pack?.config || {};
+  const [form, setForm] = useState({
+    name: pack?.name || '',
+    slug: pack?.slug || '',
+    description: pack?.description || '',
+    price: pack?.price ?? 0,
+    currency: pack?.currency || 'usd',
+    sessions_included: pack?.sessions_included ?? 1,
+    is_popular: !!pack?.is_popular,
+    is_visible: pack?.is_visible !== false,
+    sort_order: pack?.sort_order ?? 99,
+  });
+  const [technicalMinutes, setTechnicalMinutes] = useState(cfg.technical_minutes ?? 45);
+  const [behavioralMinutes, setBehavioralMinutes] = useState(cfg.behavioral_minutes ?? 15);
+  const [topics, setTopics] = useState(() => new Set(cfg.topics?.length ? cfg.topics : TOPIC_OPTIONS));
+  const [seniorityLevels, setSeniorityLevels] = useState(() => new Set(cfg.seniority_levels?.length ? cfg.seniority_levels : SENIORITY_OPTIONS));
+  const [languages, setLanguages] = useState(() => new Set(cfg.languages?.length ? cfg.languages : LANGUAGE_OPTIONS));
+  // topic -> newline-separated sub-topics text, so the user edits plain text
+  // and it's parsed into the { [topic]: string[] } map only on submit.
+  const [subTopicsText, setSubTopicsText] = useState(() => {
+    const out = {};
+    for (const [topic, list] of Object.entries(cfg.sub_topics || {})) out[topic] = (list || []).join('\n');
+    return out;
+  });
+
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const toggleIn = (setFn) => (value) => setFn((prev) => {
+    const next = new Set(prev);
+    next.has(value) ? next.delete(value) : next.add(value);
+    return next;
+  });
+
+  const submit = (e) => {
+    e.preventDefault();
+    const sub_topics = {};
+    for (const topic of topics) {
+      const lines = (subTopicsText[topic] || '').split('\n').map((s) => s.trim()).filter(Boolean);
+      if (lines.length) sub_topics[topic] = lines;
+    }
+    const payload = {
+      ...form,
+      price: parseFloat(form.price) || 0,
+      sessions_included: parseInt(form.sessions_included) || 1,
+      sort_order: parseInt(form.sort_order) || 99,
+      config: {
+        technical_minutes: parseInt(technicalMinutes) || 45,
+        behavioral_minutes: parseInt(behavioralMinutes) || 0,
+        topics: [...topics],
+        seniority_levels: [...seniorityLevels],
+        languages: [...languages],
+        sub_topics,
+      },
+    };
+    onSave(payload, pack?.id);
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="admin-interview-pack-form">
+        <DialogHeader>
+          <DialogTitle>{pack ? `Edit ${pack.name}` : 'New interview pack'}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={submit} className="grid grid-cols-2 gap-3">
+          <div className="space-y-1 col-span-1"><Label>Name</Label>
+            <Input value={form.name} onChange={(e) => set('name')(e.target.value)} required data-testid="interview-pack-form-name" /></div>
+          <div className="space-y-1 col-span-1"><Label>Slug</Label>
+            <Input value={form.slug} onChange={(e) => set('slug')(e.target.value)} required
+                   disabled={!!pack} placeholder="interview-prep-usd" data-testid="interview-pack-form-slug" /></div>
+          <div className="space-y-1 col-span-2"><Label>Description</Label>
+            <Input value={form.description} onChange={(e) => set('description')(e.target.value)} /></div>
+          <div className="space-y-1"><Label>Price</Label>
+            <Input type="number" step="0.01" value={form.price}
+                   onChange={(e) => set('price')(e.target.value)} data-testid="interview-pack-form-price" /></div>
+          <div className="space-y-1"><Label>Currency</Label>
+            <select className="h-10 w-full rounded-md border border-input bg-background px-3"
+                    value={form.currency} onChange={(e) => set('currency')(e.target.value)} disabled={!!pack}>
+              <option value="usd">USD</option><option value="inr">INR</option>
+            </select></div>
+          <div className="space-y-1"><Label>Sessions included</Label>
+            <Input type="number" min={1} value={form.sessions_included}
+                   onChange={(e) => set('sessions_included')(e.target.value)} data-testid="interview-pack-form-sessions" /></div>
+          <div className="space-y-1"><Label>Sort order</Label>
+            <Input type="number" value={form.sort_order}
+                   onChange={(e) => set('sort_order')(e.target.value)} /></div>
+          <div className="space-y-1"><Label>Visible / popular</Label>
+            <div className="flex items-center gap-4 pt-2 text-sm">
+              <label className="flex items-center gap-1.5"><input type="checkbox" checked={form.is_visible}
+                onChange={(e) => set('is_visible')(e.target.checked)} /> Visible</label>
+              <label className="flex items-center gap-1.5"><input type="checkbox" checked={form.is_popular}
+                onChange={(e) => set('is_popular')(e.target.checked)} /> Popular</label>
+            </div>
+          </div>
+
+          <div className="col-span-2 border-t border-border pt-3 mt-1">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Format (config)</p>
+          </div>
+
+          <div className="space-y-1"><Label>Technical round (minutes)</Label>
+            <Input type="number" min={1} value={technicalMinutes}
+                   onChange={(e) => setTechnicalMinutes(e.target.value)} data-testid="interview-pack-form-technical-minutes" /></div>
+          <div className="space-y-1"><Label>Behavioral round (minutes)</Label>
+            <Input type="number" min={0} value={behavioralMinutes}
+                   onChange={(e) => setBehavioralMinutes(e.target.value)} data-testid="interview-pack-form-behavioral-minutes" />
+            <p className="text-xs text-muted-foreground">0 = this pack has no behavioral round at all.</p></div>
+
+          <div className="col-span-2 space-y-1.5">
+            <Label>Topics</Label>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {TOPIC_OPTIONS.map((t) => (
+                <label key={t} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <Checkbox checked={topics.has(t)} onCheckedChange={() => toggleIn(setTopics)(t)} />
+                  {TOPIC_META[t]?.label || t}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="col-span-2 space-y-1.5">
+            <Label>Seniority levels</Label>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {SENIORITY_OPTIONS.map((s) => (
+                <label key={s} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <Checkbox checked={seniorityLevels.has(s)} onCheckedChange={() => toggleIn(setSeniorityLevels)(s)} />
+                  {SENIORITY_LABEL[s]}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="col-span-2 space-y-1.5">
+            <Label>Languages (coding rounds)</Label>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {LANGUAGE_OPTIONS.map((l) => (
+                <label key={l} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <Checkbox checked={languages.has(l)} onCheckedChange={() => toggleIn(setLanguages)(l)} />
+                  {LANGUAGE_LABEL[l]}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {topics.size > 0 && (
+            <div className="col-span-2 space-y-2">
+              <Label>Sub-topics (optional focus areas, one per line, per topic)</Label>
+              <div className="grid grid-cols-2 gap-3">
+                {[...topics].map((t) => (
+                  <div key={t} className="space-y-1">
+                    <span className="text-xs text-muted-foreground">{TOPIC_META[t]?.label || t}</span>
+                    <Textarea rows={3} placeholder="e.g. graphs&#10;dynamic_programming"
+                              value={subTopicsText[t] || ''}
+                              onChange={(e) => setSubTopicsText((prev) => ({ ...prev, [t]: e.target.value }))} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="col-span-2 mt-2">
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy} data-testid="interview-pack-form-save">
+              {busy ? 'Saving…' : (pack ? 'Save changes' : 'Create pack')}
             </Button>
           </DialogFooter>
         </form>
