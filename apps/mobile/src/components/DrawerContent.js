@@ -138,6 +138,7 @@ import {
   Video,
   Mail,
   GraduationCap,
+  Trophy,
 } from "lucide-react-native";
 
 import { logout } from "../store/slices/authSlice";
@@ -165,10 +166,6 @@ const comingSoon = [
   {
     label: "Resume Intelligence",
     Icon: FileText,
-  },
-  {
-    label: "Mock Interviews",
-    Icon: MessagesSquare,
   },
 ];
 
@@ -402,6 +399,22 @@ export default function DrawerContent({ navigation, state }) {
           Icon={Briefcase}
           screen="Career Intelligence"
           activeItem={active === "Career Intelligence"}
+        />
+
+        <MenuItem
+          label="Mock Interviews"
+          Icon={MessagesSquare}
+          screen="Mock Interviews"
+          activeItem={active === "Mock Interviews"}
+        />
+
+        {/* Registration-only — solving/submitting contest problems stays on
+            the web app's real code editor, never mobile. */}
+        <MenuItem
+          label="Contest"
+          Icon={Trophy}
+          screen="Contest"
+          activeItem={active === "Contest"}
         />
 
         {/* <MenuItem label="AI Tutor" Icon={GraduationCap} locked /> */}

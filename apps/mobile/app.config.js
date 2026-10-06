@@ -26,7 +26,8 @@ export default {
       usesAppleSignIn: true,
       infoPlist: {
         NSPhotoLibraryUsageDescription: "IEMA.ai needs access to your photos to attach images to your chats.",
-        NSCameraUsageDescription: "IEMA.ai needs access to your camera to attach photos to your chats.",
+        NSCameraUsageDescription: "IEMA.ai needs access to your camera to attach photos to your chats, and to verify you're present during a proctored Mock Interview session.",
+        NSMicrophoneUsageDescription: "IEMA.ai needs access to your microphone to record your spoken answers during a Mock Interview session.",
         ITSAppUsesNonExemptEncryption: false
       }
     },
@@ -41,6 +42,7 @@ export default {
       },
       permissions: [
         "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
         "android.permission.INTERNET"
       ],
       blockedPermissions: [
@@ -67,6 +69,8 @@ export default {
       "expo-asset",
       "expo-iap",
       "expo-sharing",
+      "expo-audio",
+      "expo-document-picker",
       [
         "expo-build-properties",
         {

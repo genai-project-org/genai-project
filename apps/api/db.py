@@ -77,6 +77,32 @@ settings_col = db["settings"]
 audit_logs_col = db["audit_logs"]
 counseling_history_col = db["counseling_history"]
 content_reports_col = db["content_reports"]
+gmail_connections_col = db["gmail_connections"]   # one per user: Gmail OAuth tokens for Career Pipeline
+career_profile_col = db["career_profile"]         # one per user: fit-scoring profile blurb
+career_pipeline_col = db["career_pipeline"]       # one per user+job: scanned Gmail job alerts
+
+# ---- MCP orchestration engine ----
+mcp_connections_col = db["mcp_connections"]       # one per user+connector: encrypted OAuth tokens
+mcp_audit_log_col = db["mcp_audit_log"]           # append-only: every MCP tool call made on a user's behalf
+mcp_oauth_states_col = db["mcp_oauth_states"]     # short-lived CSRF state for the connect redirect round-trip
+
+# ---- Resume Intelligence (persisted profile, shared by Career + Mock Interview) ----
+resume_profiles_col = db["resume_profiles"]       # one per user: structured/parsed CV
+
+# ---- Mock Interview ----
+interview_packs_col = db["interview_packs"]                             # catalog (admin-managed), each carries a `config` (durations/topics/languages/etc.)
+# One doc per purchase/admin-grant, NOT one per user — each grant snapshots the
+# pack's config at grant time, so a later admin edit to a pack never
+# retroactively changes what an already-purchased batch of sessions promised,
+# and a user who owns sessions from two different packs can pick which
+# format to use per interview. See services/interview_service.py.
+interview_entitlement_grants_col = db["interview_entitlement_grants"]
+interview_entitlement_tx_col = db["interview_entitlement_transactions"]  # purchase/consume/refund ledger
+interview_sessions_col = db["interview_sessions"]
+interview_turns_col = db["interview_turns"]                             # append-only transcript
+interview_violations_col = db["interview_violations"]
+interview_score_events_col = db["interview_score_events"]               # per-question rubric datapoints
+interview_reports_col = db["interview_reports"]
 
 
 async def ensure_indexes():
@@ -94,3 +120,22 @@ async def ensure_indexes():
     await counseling_history_col.create_index([("user_id", 1), ("created_at", -1)])
     await content_reports_col.create_index([("status", 1), ("created_at", -1)])
     await content_reports_col.create_index([("user_id", 1), ("created_at", -1)])
+    await gmail_connections_col.create_index("user_id", unique=True)
+    await career_profile_col.create_index("user_id", unique=True)
+    await career_pipeline_col.create_index([("user_id", 1), ("created_at", -1)])
+    # sparse: docs whose parser couldn't recover a job_url omit the field entirely
+    # (never store it as literal null) so they don't collide under this unique index.
+    await career_pipeline_col.create_index([("user_id", 1), ("job_url", 1)], unique=True, sparse=True)
+    await resume_profiles_col.create_index("user_id", unique=True)
+    await mcp_connections_col.create_index([("user_id", 1), ("connector_id", 1)], unique=True)
+    await mcp_audit_log_col.create_index([("user_id", 1), ("created_at", -1)])
+    await mcp_oauth_states_col.create_index("state", unique=True)
+    # TTL index: a state doc is only ever needed for the few minutes between
+    # "Connect" and the provider's redirect back — auto-expire abandoned ones.
+    # Requires `created_at` to be a real BSON date on this collection only
+    # (services/mcp/oauth_service.py stores now_utc(), not now_iso()) —
+    # Mongo TTL indexes don't expire ISO-string fields, unlike every other
+    # `created_at` in this codebase.
+    await mcp_oauth_states_col.create_index("created_at", expireAfterSeconds=600)
+    # Mock Interview collections' indexes are owned by services/interview_service.py
+    # (ensure_indexes(), called from server.py startup), mirroring contest_service.py.

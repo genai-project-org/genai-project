@@ -125,6 +125,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
 .venv
 env/
 venv/
@@ -178,3 +179,14 @@ pyrightconfig.json
 secrets/
 *.p8
 *service-account*.json
+
+# Mock Interview — self-hosted voice models, downloaded per-environment (see
+# services/speech_service.py's module docstring / PIPER_VOICE_MODEL /
+# PIPER_VOICE_DIR) rather than vendored into the repo: several of the .onnx
+# files exceed GitHub's 100MB per-file limit, and none of them are source.
+models/piper/
+
+# Local dev Mongo data directory (created by `mongod --dbpath
+# .mongo_data_practice`) — binary database files, not source, and actively
+# mutates on every local run.
+.mongo_data_practice/

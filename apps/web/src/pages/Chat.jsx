@@ -9,7 +9,8 @@ import { Input } from '@/components/ui/input';
 import {
   Send, Sparkles, MessageSquare, Trash2, Pin, PinOff, Loader2,
   Copy, Check, Search, Plus, Paperclip, X, ImageIcon, ChevronRight, Pencil, Flag,
-  Share2, GraduationCap, Activity, Briefcase, Megaphone, Palette, Smile, Target, Plane
+  Share2, GraduationCap, Activity, Briefcase, Megaphone, Palette, Smile, Target, Plane,
+  Mail, ListChecks, FolderOpen, Code2, Headset, ShoppingCart, CalendarDays, Users2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
@@ -101,6 +102,54 @@ const TEMPLATE_CATEGORIES = [
     { title: 'Vacation Planner', prompt: "Plan a low-budget 3-day summer trip to Sydney focused on local attractions and theatre." },
     { title: 'Safe Travel Advisor', prompt: "Ask where I want to visit, then explain important cultural traditions and legal considerations." },
   ] },
+  // Connector-powered categories below mirror services/mcp/registry.py's connector
+  // categories — connecting more services from /connectors unlocks more of these for real.
+  { category: 'Communication', Icon: Mail, prompts: [
+    { title: 'Unread Email Summary', prompt: "Summarize my unread Gmail from today." },
+    { title: 'Draft a Reply', prompt: "Draft a reply to the most recent email in my inbox." },
+    { title: 'Post to Slack', prompt: "Post 'Standup notes are in the doc' to the #general channel in Slack." },
+    { title: 'Slack Catch-Up', prompt: "What did I miss in Slack #announcements this week?" },
+    { title: 'Schedule a Meeting', prompt: "Find a 30-minute slot tomorrow and create a Zoom meeting for it." },
+  ] },
+  { category: 'Calendar & Scheduling', Icon: CalendarDays, prompts: [
+    { title: "Tomorrow's Agenda", prompt: "What's on my Google Calendar tomorrow?" },
+    { title: 'Block Focus Time', prompt: "Block 2-4pm this Friday on my calendar for focus time." },
+    { title: 'Reschedule', prompt: "Find my next meeting with the design team and suggest a new time that doesn't conflict with anything else." },
+  ] },
+  { category: 'Project Management', Icon: ListChecks, prompts: [
+    { title: 'My Open Tickets', prompt: "List my open Jira tickets assigned to me." },
+    { title: 'Create a Task', prompt: "Create an Asana task: 'Follow up with design on the onboarding flow', due Friday." },
+    { title: "This Week in Linear", prompt: "What's due in Linear this week?" },
+    { title: 'Board Status', prompt: "Summarize the status of my monday.com board." },
+    { title: 'New Trello Card', prompt: "Add a card to my Trello 'To Do' list: 'Review Q3 budget'." },
+  ] },
+  { category: 'Docs & Files', Icon: FolderOpen, prompts: [
+    { title: 'Search Notion', prompt: "Search my Notion workspace for the onboarding doc and summarize it." },
+    { title: 'Confluence Page', prompt: "Create a Confluence page summarizing today's planning meeting." },
+    { title: 'Draft a Doc', prompt: "Draft a Google Doc outlining this quarter's goals." },
+    { title: 'Find a File', prompt: "Find the latest budget spreadsheet in my Dropbox." },
+  ] },
+  { category: 'Developer Tools', Icon: Code2, prompts: [
+    { title: 'Open a GitHub Issue', prompt: "Open a GitHub issue in my repo for the login bug we discussed, with repro steps." },
+    { title: 'PR Review Summary', prompt: "Summarize the open pull requests in my GitHub repo." },
+    { title: 'Recent Errors', prompt: "What are the top unresolved Sentry issues from the last 24 hours?" },
+    { title: 'Deploy Status', prompt: "What's the status of my latest Vercel deployment?" },
+  ] },
+  { category: 'CRM & Support', Icon: Headset, prompts: [
+    { title: 'New HubSpot Contact', prompt: "Create a HubSpot contact for a lead I just talked to and log a note about the call." },
+    { title: 'Open Conversations', prompt: "Summarize my open Intercom conversations that need a reply." },
+    { title: 'Support Ticket', prompt: "Create a Zendesk ticket for a customer reporting a login issue." },
+  ] },
+  { category: 'Commerce & Finance', Icon: ShoppingCart, prompts: [
+    { title: 'Recent Payments', prompt: "Summarize my last 10 Stripe charges and flag any refunds." },
+    { title: 'Order Lookup', prompt: "Find a Shopify order by customer email and give me its status." },
+    { title: 'Outstanding Invoices', prompt: "List my overdue QuickBooks invoices." },
+  ] },
+  { category: 'Social & Analytics', Icon: Users2, prompts: [
+    { title: 'Traffic Snapshot', prompt: "Summarize this week's traffic from Google Analytics." },
+    { title: 'Draft a Post', prompt: "Draft a LinkedIn post about our product launch." },
+    { title: 'Schedule a Tweet', prompt: "Draft a tweet announcing our new feature." },
+  ] },
 ];
 
 export default function Chat() {
@@ -112,6 +161,7 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
+  const [toolStatus, setToolStatus] = useState(null);
   const [meta, setMeta] = useState(null);
   const [search, setSearch] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -211,6 +261,7 @@ export default function Chat() {
     setStreaming(true);
     setStreamText('');
     setMeta(null);
+    setToolStatus(null);
     // Optimistically add user message
     const tempUserMsg = { id: 'tmp-' + Date.now(), role: 'user', content: text, attachments: sentAttachments };
     setMessages((m) => [...m, tempUserMsg]);
@@ -261,10 +312,15 @@ export default function Chat() {
             } else if (obj.type === 'delta') {
               finalText += obj.content;
               setStreamText(finalText);
+              setToolStatus(null);
             } else if (obj.type === 'error') {
               toast.error(obj.message);
             } else if (obj.type === 'warn') {
               toast.info(obj.message);
+            } else if (obj.type === 'tool_status') {
+              // Transient "Using Slack..." style status while a connected
+              // service's tool is being called — not part of the saved reply.
+              setToolStatus(obj.message);
             } else if (obj.type === 'saved') {
               // The stream carries the new balance, so no extra GET /wallet/ round-trip.
               if (typeof obj.balance === 'number') dispatch(setWalletBalance(obj.balance));
@@ -500,7 +556,7 @@ export default function Chat() {
             {streaming && !streamText && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {meta ? `Streaming from ${meta.model}...` : 'Thinking...'}
+                {toolStatus || (meta ? `Streaming from ${meta.model}...` : 'Thinking...')}
               </div>
             )}
           </div>

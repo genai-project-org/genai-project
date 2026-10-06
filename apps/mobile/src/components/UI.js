@@ -49,12 +49,15 @@ export function Input({ value, onChangeText, placeholder, secureTextEntry, keybo
   );
 }
 
-export function Card({ children, style }) {
+export function Card({ children, style, ...rest }) {
   return (
-    <View style={[{
-      borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg,
-      backgroundColor: colors.card, padding: spacing.lg,
-    }, style]}>
+    <View
+      style={[{
+        borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg,
+        backgroundColor: colors.card, padding: spacing.lg,
+      }, style]}
+      {...rest}
+    >
       {children}
     </View>
   );

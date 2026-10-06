@@ -5,11 +5,17 @@ annotated-doc==0.0.4
 annotated-types==0.7.0
 anthropic>=0.40
 anyio==4.14.2
+mongomock==4.3.0
+mongomock-motor==0.0.36
 APScheduler==3.11.3
 ast_serialize==0.6.0
 attrs==26.1.0
 Authlib==1.7.2
 bcrypt==4.1.3
+# beautifulsoup4: parses LinkedIn job-alert email HTML for Career Pipeline's Gmail
+# scan. LinkedIn's marketing-email markup isn't documented/stable, so the parser
+# needs a real DOM walk (not regex) to degrade gracefully across template changes.
+beautifulsoup4==4.14.2
 black==26.5.1
 boto3==1.43.47
 botocore==1.43.47
@@ -26,8 +32,20 @@ et_xmlfile==2.0.0
 execnet==2.1.2
 fastapi==0.110.1
 fastuuid==0.14.0
+# faster-whisper: self-hosted, CPU-friendly speech-to-text for Mock Interview
+# (services/speech_service.py) — deliberately not a paid per-minute STT API,
+# see that module's docstring for the turn-based (not streaming) scope and
+# latency tradeoffs this implies. Pulls in ctranslate2 as a dependency.
+faster-whisper==1.2.1
 filelock==3.29.7
 flake8==7.3.0
+fonttools==4.65.0
+# fpdf2: lightweight, pure-Python PDF generation — used only for the Contest
+# Mode certificate of participation (real text-layout PDF, not a rasterized
+# image). No compiled/native deps, so it's a safe last-minute addition ahead
+# of the hackathon deadline. defusedxml is its one transitive dependency.
+fpdf2==2.8.8
+defusedxml==0.7.1
 frozenlist==1.8.0
 fsspec==2026.6.0
 google-ai-generativelanguage==0.6.15
@@ -62,6 +80,9 @@ markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mccabe==0.7.0
 mdurl==0.1.2
+# mcp: official Model Context Protocol SDK — backs services/mcp/* (the
+# connector engine's client host + our own hand-rolled connector servers).
+mcp==1.30.0
 motor==3.3.1
 multidict==6.7.1
 mypy==2.3.0
@@ -75,6 +96,12 @@ pandas==3.0.3
 passlib==1.7.4
 pathspec==1.1.1
 pillow==12.3.0
+# piper-tts: self-hosted, offline text-to-speech for Mock Interview's AI
+# interviewer voice (services/speech_service.py) — installs a `piper` CLI
+# entry point. Still requires a .onnx VOICE MODEL FILE to be vendored into
+# the deploy image separately (PIPER_VOICE_MODEL env var) — this pip package
+# alone does not include one. See speech_service.py's module docstring.
+piper-tts==1.8.0
 platformdirs==4.10.0
 pluggy==1.6.0
 propcache==0.5.2
@@ -127,7 +154,7 @@ tzdata==2026.3
 tzlocal==5.4.4
 uritemplate==4.2.0
 urllib3==2.7.0
-uvicorn==0.25.0
+uvicorn==0.31.1
 watchfiles==1.2.0
 websockets==16.1
 yarl==1.24.2

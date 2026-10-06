@@ -7,7 +7,7 @@ import {
   MessageSquare, Sparkles, BarChart3, Wallet, CreditCard, Bell,
   User as UserIcon, Settings, Shield, PanelLeftClose,
   Briefcase, Rocket, FileText, GraduationCap, MessagesSquare, Users, Lock, Plus, LogOut,
-  Sun, Moon, Monitor, FlaskConical, Heart, Award, MapPin, Wrench, Code2, ChevronDown
+  Sun, Moon, Monitor, FlaskConical, Heart, Award, MapPin, Wrench, Code2, ChevronDown, Terminal, Map, Trophy, Plug
 } from 'lucide-react';
 import { NAV } from '@/constants/testIds';
 import { cn } from '@/lib/utils';
@@ -30,8 +30,13 @@ const SECTIONS = [
     { to: '/counseling', label: 'Counseling', Icon: Heart, tid: 'nav-counseling' },
     { to: '/career', label: 'Career Intelligence', Icon: Briefcase, tid: 'nav-career' },
     { to: '/resume', label: 'Resume Intelligence', Icon: FileText, tid: 'nav-resume' },
+    { to: '/practice', label: 'Practice Engine', Icon: Terminal, tid: 'nav-practice' },
+    { to: '/roadmap', label: 'Practice Roadmap', Icon: Map, tid: 'nav-roadmap' },
+    { to: '/contest', label: 'Contest Mode', Icon: Trophy, tid: 'nav-contest' },
+    { to: '/interview', label: 'Mock Interviews', Icon: MessagesSquare, tid: 'nav-interview' },
   ] },
   { key: 'account', title: 'Account', items: [
+    { to: '/connectors', label: 'Connectors', Icon: Plug, tid: 'nav-connectors' },
     { to: '/usage', label: 'Usage', Icon: BarChart3, tid: NAV.linkUsage },
     { to: '/wallet', label: 'Credit Wallet', Icon: Wallet, tid: NAV.linkWallet },
     { to: '/billing', label: 'Billing', Icon: CreditCard, tid: NAV.linkBilling },
@@ -45,7 +50,6 @@ const comingSoon = [
   { label: 'Startup Intelligence', Icon: Rocket },
   { label: 'Research Intelligence', Icon: FlaskConical },
   { label: 'Dynamic Course Engine', Icon: GraduationCap },
-  { label: 'Mock Interviews', Icon: MessagesSquare },
   { label: 'Scholarships', Icon: Award },
   { label: 'Internships', Icon: MapPin },
   { label: 'Freelance Intelligence', Icon: Wrench },

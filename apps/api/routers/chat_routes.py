@@ -17,9 +17,22 @@ from services.ai_service import (
     stream_ai_response, MODEL_CATALOG, ensure_model_allowed, is_premium_model,
     user_allows_premium, default_model_id,
 )
+from services.mcp.orchestrator_service import stream_prompt_with_tools, user_has_enabled_connectors
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _pick_response_stream(user: User, conv_id: str, req: SendMessageRequest, history: list, has_tools: bool):
+    """Routes to the MCP tool-loop when the user has any enabled connector,
+    otherwise the plain single-call path — both yield the same event shape
+    ({"type": "meta"/"delta"/"done"/"error", ...}), so everything below
+    (persistence, billing, conversation/ai_requests logging) needs no change
+    regardless of which one actually ran.
+    """
+    if has_tools:
+        return stream_prompt_with_tools(user.id, conv_id, req.content, history)
+    return stream_ai_response(conv_id, req.content, history, req.model, attachments=req.attachments, user_id=user.id)
 
 CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
 
@@ -209,6 +222,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
     # Load history
     history_docs = await messages_col.find({"conversation_id": conv_id}).sort("created_at", 1).to_list(50)
     history = [{"role": d["role"], "content": d["content"]} for d in history_docs[:-1]]  # exclude the just-inserted user msg from prefix
+    has_tools = await user_has_enabled_connectors(user.id)
 
     async def event_stream():
         yield f"data: {json.dumps({'type': 'conversation', 'conversation_id': conv_id, 'user_message_id': user_msg.id})}\n\n"
@@ -216,7 +230,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
         model = None
         full_text = ""
         try:
-            async for evt in stream_ai_response(conv_id, req.content, history, req.model, attachments=req.attachments):
+            async for evt in _pick_response_stream(user, conv_id, req, history, has_tools):
                 if evt["type"] == "meta":
                     provider = evt["provider"]
                     model = evt["model"]
@@ -228,6 +242,8 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                     full_text = evt.get("content", full_text) or full_text
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     break
+                elif evt["type"] == "tool_status":
+                    yield f"data: {json.dumps(evt)}\n\n"
                 elif evt["type"] == "warn":
                     yield f"data: {json.dumps(evt)}\n\n"
                 elif evt["type"] == "error":
@@ -365,14 +381,9 @@ async def send_message(
     provider = None
     model = None
     full_text = ""
+    has_tools = await user_has_enabled_connectors(user.id)
 
-    async for evt in stream_ai_response(
-        conv_id,
-        req.content,
-        history,
-        req.model,
-        attachments=req.attachments,
-    ):
+    async for evt in _pick_response_stream(user, conv_id, req, history, has_tools):
         # Client tapped Stop (or otherwise dropped the connection) — bail out
         # without saving an assistant message or spending credits, instead of
         # finishing the generation server-side regardless and having it
