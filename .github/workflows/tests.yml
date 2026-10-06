@@ -65,7 +65,11 @@ jobs:
 
       - run: yarn install --frozen-lockfile
       - run: npx playwright install --with-deps chromium
-      - run: yarn test:e2e
+      # Only smoke.spec.js — practice-design-diagram.spec.js intentionally
+      # talks to a REAL local backend (see its own header comment) that this
+      # job never starts; it's a manual/local-only check, not part of the
+      # mocked-backend smoke layer this job is named for.
+      - run: yarn test:e2e e2e/smoke.spec.js
 
   mobile:
     name: Mobile tests (Jest)
