@@ -1,5 +1,6 @@
 """Code Builder routes — projects, refine, GitHub push, S3 share."""
 import os
+import re
 import uuid
 import secrets
 import base64
@@ -87,7 +88,7 @@ class SaveFilesRequest(BaseModel):
 class GithubPushRequest(BaseModel):
     pat: Optional[str] = None  # If provided, is stored (encrypted). Otherwise reuses saved.
     repo: str = Field(min_length=1, max_length=140)  # "name" or "owner/repo"
-    commit_message: str = "IEMA.ai Builder push"
+    commit_message: Optional[str] = None  # auto-generated from the project history when empty
     save_pat: bool = True
     private: bool = True
 
@@ -254,7 +255,8 @@ async def refine(project_id: str, req: RefineRequest, user: User = Depends(get_c
     billing = await spend(user.id, refine_key, description="Builder refine")
     await builder_projects_col.update_one(
         {"_id": ObjectId(project_id)},
-        {"$set": {"files": new_files, "file_count": len(new_files), "updated_at": now_iso()}},
+        {"$set": {"files": new_files, "file_count": len(new_files), "updated_at": now_iso()},
+         "$push": {"history": {"instruction": req.instruction[:500], "at": now_iso()}}},
     )
     await log_event("builder_refine", user_id=user.id,
                     payload={"project_id": project_id, "instruction": req.instruction[:400]})
@@ -352,12 +354,89 @@ async def _github_token(user_id: str) -> Optional[str]:
 
 
 _GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "iema-ai-builder"}
+_OLD_DEFAULT_MSG = "IEMA.ai Builder push"
+
+
+def _commit_type(text: str) -> str:
+    t = text.lower()
+    if re.match(r"\s*(please\s+)?(add|create|implement|build|support|allow|include|introduce|make a|new)\b", t):
+        return "feat"
+    if re.search(r"\b(fix|bug|error|broken|crash|issue|wrong)\b", t):
+        return "fix"
+    if re.search(r"\b(refactor|rename|clean ?up|restructure|simplif)", t):
+        return "refactor"
+    if re.search(r"\b(readme|docs?|comment)\b", t):
+        return "docs"
+    if re.search(r"\b(style|color|colour|theme|font|layout|spacing|dark|light|responsive|css|design|animation|look)\b", t):
+        return "style"
+    return "feat"
+
+
+def _one_line(text: str, limit: int = 60) -> str:
+    t = re.sub(r"\s+", " ", (text or "")).strip().rstrip(".!?")
+    if len(t) > limit:
+        t = t[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+    return (t[:1].lower() + t[1:]) if t else t
+
+
+def build_commit_message(doc: dict, first_push: bool, pending: list) -> str:
+    """Conventional-commit style message from the project's own history (no LLM call)."""
+    name = (doc.get("name") or "project").strip()
+    if first_push or not (doc.get("github") or {}).get("last_pushed_at"):
+        subject = f"feat: initial version of {name}"[:72]
+        body = f"Generated with IEMA.ai Builder from the prompt:\n\n{(doc.get('prompt') or '')[:300].strip()}"
+        if pending:
+            body += "\n\nRefinements included:\n" + "\n".join(f"- {_one_line(h['instruction'], 100)}" for h in pending[-10:])
+        return f"{subject}\n\n{body}".strip()
+    if not pending:
+        return f"chore: sync {name} from IEMA.ai Builder"
+    latest = pending[-1]["instruction"]
+    subject = f"{_commit_type(latest)}: {_one_line(latest)}"
+    if len(pending) > 1:
+        subject = f"{_commit_type(latest)}: {_one_line(latest, 48)} (+{len(pending) - 1} more)"
+    body = "\n".join(f"- {_one_line(h['instruction'], 100)}" for h in pending[-10:])
+    return f"{subject}\n\nChanges since the last push:\n{body}"
+
+
+async def _single_commit(http, repo: str, files: list, message: str) -> Optional[dict]:
+    """Commit every file in ONE commit via the Git Data API. Returns None if the repo has no
+    commits yet (the caller falls back to the Contents API)."""
+    base = f"https://api.github.com/repos/{repo}"
+    info = await http.get(base)
+    branch = (info.json() or {}).get("default_branch", "main") if info.status_code == 200 else "main"
+    ref = await http.get(f"{base}/git/ref/heads/{branch}")
+    if ref.status_code != 200:
+        return None
+    head = ref.json()["object"]["sha"]
+    commit = await http.get(f"{base}/git/commits/{head}")
+    base_tree = commit.json()["tree"]["sha"]
+    tree = []
+    for f in files:
+        blob = await http.post(f"{base}/git/blobs", json={
+            "content": base64.b64encode(f["content"].encode("utf-8")).decode("ascii"), "encoding": "base64"})
+        if blob.status_code not in (200, 201):
+            raise HTTPException(502, f"GitHub rejected a file upload ({blob.status_code}).")
+        tree.append({"path": f["path"].lstrip("/"), "mode": "100644", "type": "blob", "sha": blob.json()["sha"]})
+    new_tree = await http.post(f"{base}/git/trees", json={"base_tree": base_tree, "tree": tree})
+    if new_tree.status_code not in (200, 201):
+        raise HTTPException(502, f"GitHub could not build the commit ({new_tree.status_code}).")
+    if new_tree.json()["sha"] == base_tree:
+        return {"unchanged": True, "paths": [t["path"] for t in tree]}
+    new_commit = await http.post(f"{base}/git/commits", json={
+        "message": message, "tree": new_tree.json()["sha"], "parents": [head]})
+    if new_commit.status_code not in (200, 201):
+        raise HTTPException(502, f"GitHub could not create the commit ({new_commit.status_code}).")
+    upd = await http.patch(f"{base}/git/refs/heads/{branch}", json={"sha": new_commit.json()["sha"]})
+    if upd.status_code != 200:
+        raise HTTPException(502, f"GitHub could not update {branch} ({upd.status_code}).")
+    return {"unchanged": False, "paths": [t["path"] for t in tree], "commit": new_commit.json()["sha"]}
 
 
 @router.post("/projects/{project_id}/github/push")
 async def github_push(project_id: str, req: GithubPushRequest, user: User = Depends(get_current_user)):
-    """Push all project files to GitHub using the user's connected GitHub account (OAuth).
-    `repo` may be a bare name (created under the user's account if missing) or `owner/repo`."""
+    """Push all project files to GitHub in a single commit, using the user's connected GitHub
+    account (OAuth). `repo` may be a bare name (created under the user's account if missing)
+    or `owner/repo`. The commit message is generated from the project's history unless given."""
     doc = await _load_project(user.id, project_id)
     token = await _github_token(user.id)
     if not token:
@@ -367,9 +446,13 @@ async def github_push(project_id: str, req: GithubPushRequest, user: User = Depe
     if not repo_in:
         raise HTTPException(400, "Enter a repository name.")
 
-    pushed = []
-    errors = []
-    created = False
+    gh = doc.get("github") or {}
+    history = doc.get("history") or []
+    pending = history[int(gh.get("history_len", 0)):] if gh.get("last_pushed_at") else history
+    custom = (req.commit_message or "").strip()
+    message = custom if custom and custom != _OLD_DEFAULT_MSG else build_commit_message(doc, not gh.get("last_pushed_at"), pending)
+
+    pushed, errors, created, unchanged = [], [], False, False
     async with httpx.AsyncClient(timeout=30, headers=headers) as http:
         if "/" in repo_in:
             repo = repo_in
@@ -382,50 +465,46 @@ async def github_push(project_id: str, req: GithubPushRequest, user: User = Depe
         if chk.status_code == 404:
             owner, name = repo.split("/", 1)
             me = await http.get("https://api.github.com/user")
+            payload = {"name": name, "private": bool(req.private), "auto_init": True,
+                       "description": f"Built with IEMA.ai: {doc.get('name', '')}"[:200]}
             if me.status_code == 200 and me.json().get("login", "").lower() == owner.lower():
-                mk = await http.post("https://api.github.com/user/repos",
-                                     json={"name": name, "private": bool(req.private),
-                                           "description": f"Built with IEMA.ai: {doc.get('name', '')}"[:200]})
+                mk = await http.post("https://api.github.com/user/repos", json=payload)
             else:
-                mk = await http.post(f"https://api.github.com/orgs/{owner}/repos",
-                                     json={"name": name, "private": bool(req.private)})
+                mk = await http.post(f"https://api.github.com/orgs/{owner}/repos", json=payload)
             if mk.status_code not in (200, 201):
                 raise HTTPException(400, f"Could not create repository: {mk.status_code} {mk.text[:140]}")
             created = True
         elif chk.status_code != 200:
             raise HTTPException(400, f"GitHub says {chk.status_code} for {repo}. Check the repository name and your access.")
 
-        for f in doc.get("files", []):
-            path = f["path"].lstrip("/")
-            api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
-            sha = None
-            r = await http.get(api_url)
-            if r.status_code == 200:
-                sha = r.json().get("sha")
-            elif r.status_code not in (404,):
-                errors.append({"path": path, "error": f"lookup {r.status_code}"})
-                continue
-            payload = {
-                "message": req.commit_message,
-                "content": base64.b64encode(f["content"].encode("utf-8")).decode("ascii"),
-            }
-            if sha:
-                payload["sha"] = sha
-            put = await http.put(api_url, json=payload)
-            if put.status_code in (200, 201):
-                pushed.append(path)
-            else:
-                errors.append({"path": path, "error": f"{put.status_code}: {put.text[:120]}"})
+        files = doc.get("files", [])
+        res = await _single_commit(http, repo, files, message)
+        if res is not None:
+            pushed = res["paths"]
+            unchanged = res["unchanged"]
+        else:
+            # Repository has no commits yet: the Contents API creates the first commit(s).
+            for f in files:
+                path = f["path"].lstrip("/")
+                api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
+                put = await http.put(api_url, json={
+                    "message": message,
+                    "content": base64.b64encode(f["content"].encode("utf-8")).decode("ascii")})
+                if put.status_code in (200, 201):
+                    pushed.append(path)
+                else:
+                    errors.append({"path": path, "error": f"{put.status_code}: {put.text[:120]}"})
 
     await builder_projects_col.update_one(
         {"_id": ObjectId(project_id)},
-        {"$set": {"github": {"repo": repo, "last_pushed_at": now_iso()}, "updated_at": now_iso()}},
+        {"$set": {"github": {"repo": repo, "last_pushed_at": now_iso(), "history_len": len(history)},
+                  "updated_at": now_iso()}},
     )
     await log_event("builder_github_push", user_id=user.id,
                     payload={"project_id": project_id, "repo": repo, "created": created,
-                             "pushed": len(pushed), "errors": len(errors)})
-    return {"pushed": pushed, "errors": errors, "repo": repo, "created": created,
-            "repo_url": f"https://github.com/{repo}"}
+                             "pushed": len(pushed), "errors": len(errors), "unchanged": unchanged})
+    return {"pushed": pushed, "errors": errors, "repo": repo, "created": created, "unchanged": unchanged,
+            "commit_message": message.split("\n", 1)[0], "repo_url": f"https://github.com/{repo}"}
 
 
 @router.get("/github/status")

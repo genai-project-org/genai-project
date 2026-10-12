@@ -320,7 +320,7 @@ function CreateDialog({ open, onOpenChange, onCreated, kind = 'static', copy = C
 function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
   const [repo, setRepo] = useState('');
   const [isPrivate, setIsPrivate] = useState(true);
-  const [commit, setCommit] = useState('IEMA.ai Builder push');
+  const [commit, setCommit] = useState('');
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [login, setLogin] = useState('');
@@ -370,7 +370,7 @@ function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
     setLoading(true); setResult(null);
     try {
       const { data } = await api.post(`/builder/projects/${project.id}/github/push`,
-        { repo: repo.trim(), commit_message: commit, private: isPrivate });
+        { repo: repo.trim(), commit_message: commit.trim() || null, private: isPrivate });
       setResult(data);
       toast.success(data.created ? `Created ${data.repo} and pushed ${data.pushed.length} files` : `Pushed ${data.pushed.length} files`);
       onDone && onDone();
@@ -407,13 +407,15 @@ function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
               {login && <span className="text-sm text-muted-foreground shrink-0">{login} /</span>}
               <Input placeholder="repository-name" value={repo} onChange={(e) => setRepo(e.target.value)} data-testid="builder-github-repo" />
             </div>
-            <Input placeholder="Commit message" value={commit} onChange={(e) => setCommit(e.target.value)} />
+            <Input placeholder="Commit message (optional: generated from your changes)" value={commit} onChange={(e) => setCommit(e.target.value)} />
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
               <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} /> Private repository (when created)
             </label>
             {result && (
               <div className="rounded-md bg-primary/5 border border-primary/20 p-3 text-xs">
                 <div>{result.created ? 'Repository created. ' : ''}Pushed: {result.pushed.length} files</div>
+                {result.commit_message && <div className="text-muted-foreground">Commit: {result.commit_message}</div>}
+                {result.unchanged && <div>No changes since the last push.</div>}
                 {result.errors.length > 0 && <div className="text-destructive">Errors: {result.errors.length}</div>}
                 <a href={result.repo_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{result.repo_url}</a>
               </div>
