@@ -8,10 +8,10 @@ from auth import get_current_user
 from db import mcp_audit_log_col, mcp_connections_col
 from models import (
     McpApiKeyConnectRequest, McpCallbackRequest, McpConnectorPublic, McpPromptRequest,
-    McpRedirectTokenRequest, McpToggleRequest, User,
+    McpRedirectTokenRequest, McpRetryStepRequest, McpToggleRequest, User,
 )
 from services.mcp import api_key_service, oauth_service
-from services.mcp.orchestrator_service import run_prompt
+from services.mcp.orchestrator_service import retry_step, run_prompt
 from services.mcp.registry import get_connector, list_connectors
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ async def get_connectors(user: User = Depends(get_current_user)):
             requires_domain=cfg.requires_domain,
             domain_label=cfg.domain_label,
             domain_placeholder=cfg.domain_placeholder,
+            notes=cfg.mcp_notes if cfg.mcp_status == "ready" and cfg.auth_type == "api_key" else "",
             scopes=cfg.scopes,
             connected=cfg.id in connections,
             enabled=connections.get(cfg.id, {}).get("enabled", True),
@@ -113,6 +114,18 @@ async def prompt(req: McpPromptRequest, user: User = Depends(get_current_user)):
     except Exception as e:
         logger.exception(f"MCP prompt failed for user {user.id}")
         raise HTTPException(500, f"Failed to run prompt: {e}")
+
+
+@router.post("/steps/retry")
+async def retry_workspace_step(req: McpRetryStepRequest, user: User = Depends(get_current_user)):
+    """Re-run a single failed tool call from the Workspace timeline's Retry button."""
+    try:
+        return await retry_step(user.id, req.connector_id, req.tool, req.args)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        logger.exception(f"Step retry failed for user {user.id}")
+        raise HTTPException(500, "Couldn't retry that step — please try again in a moment.")
 
 
 @router.get("/audit")

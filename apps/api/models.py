@@ -134,6 +134,9 @@ class Message(BaseDocument):
     tokens_out: int = 0
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
     flagged: bool = False  # personal bookmark; drives the "Flagged Prompts" sidebar list
+    # Workspace orchestration timeline (plan + tool steps) for assistant replies that used connectors
+    plan: Optional[Dict[str, Any]] = None
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: now_utc().isoformat())
 
 
@@ -142,6 +145,7 @@ class SendMessageRequest(BaseModel):
     conversation_id: Optional[str] = None
     model: Optional[str] = None  # optional model override
     attachments: Optional[List[Dict[str, Any]]] = None  # [{url, content_type, filename}]
+    mentions: Optional[List[str]] = None  # connector ids @-mentioned in the message (Workspace)
 
 
 class RenameConversationRequest(BaseModel):
@@ -312,6 +316,7 @@ class McpConnectorPublic(BaseModel):
     requires_domain: bool = False  # oauth2 connectors with a per-store/per-tenant host (e.g. Shopify)
     domain_label: str = "Domain"
     domain_placeholder: str = ""
+    notes: str = ""  # short user-facing setup hint (e.g. where to create an API key)
     scopes: List[str]
     connected: bool
     enabled: bool = True
@@ -335,6 +340,12 @@ class McpRedirectTokenRequest(BaseModel):
 
 class McpApiKeyConnectRequest(BaseModel):
     values: Dict[str, str]
+
+
+class McpRetryStepRequest(BaseModel):
+    connector_id: str
+    tool: str
+    args: Dict[str, Any] = Field(default_factory=dict)
 
 
 class McpPromptRequest(BaseModel):

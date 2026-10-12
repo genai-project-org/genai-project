@@ -6,6 +6,7 @@ connector for the duration of that prompt's tool-use loop, and is torn down
 afterward. No cross-request pooling in phase 1 — simplest correct thing;
 revisit if per-prompt subprocess/connection spin-up becomes a latency issue.
 """
+import asyncio
 import logging
 import os
 from contextlib import AsyncExitStack
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # "google_calendar__create_event" — lets the orchestrator route a tool_use
 # block back to the right connector's session without ambiguity.
 NAMESPACE_SEP = "__"
+TOOL_TIMEOUT_S = 45
 
 
 def _namespaced(connector_id: str, tool_name: str) -> str:
@@ -123,11 +125,17 @@ class ConnectorSessionPool:
         if not session:
             return {"error": f"{connector_id} is not connected in this session"}
         try:
-            result = await session.call_tool(tool_name, arguments)
+            result = await asyncio.wait_for(session.call_tool(tool_name, arguments), timeout=TOOL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return {"error": f"Tool call timed out after {TOOL_TIMEOUT_S}s"}
         except Exception as e:
-            logger.exception(f"MCP tool call failed: {connector_id}.{tool_name}")
-            return {"error": str(e)[:300]}
+            logger.warning(f"MCP tool call failed: {connector_id}.{tool_name}: {e!r}")
+            return {"error": str(e)[:300] or type(e).__name__}
         text = _mcp_content_to_text(result)
         if getattr(result, "isError", False):
             return {"error": text or "Tool call failed"}
+        # The older in-house servers (Slack/Gmail/Calendar) report failures as a
+        # returned "Error ..." string instead of raising — treat those as failures too.
+        if text.startswith("Error "):
+            return {"error": text[:300]}
         return {"result": text}

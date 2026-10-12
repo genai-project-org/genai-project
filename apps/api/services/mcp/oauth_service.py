@@ -131,23 +131,30 @@ async def _consume_state(user_id: str, connector_id: str, state: str) -> dict:
     return doc
 
 
+async def _post_token(http: httpx.AsyncClient, cfg: ConnectorConfig, token_url: str, fields: Dict[str, str]):
+    """POST to a provider's token endpoint, honoring per-provider client-auth quirks."""
+    headers = {"Accept": "application/json"}
+    if cfg.token_basic_auth:
+        auth = (cfg.client_id(), cfg.client_secret())
+    else:
+        auth = None
+        fields = {**fields, "client_id": cfg.client_id(), "client_secret": cfg.client_secret()}
+    if cfg.token_request_json:
+        return await http.post(token_url, json=fields, headers=headers, auth=auth)
+    return await http.post(token_url, data=fields, headers=headers, auth=auth)
+
+
 async def exchange_code(user_id: str, connector_id: str, code: str, redirect_uri: str, state: str) -> Dict[str, Any]:
     cfg = _connector_or_raise(connector_id)
     state_doc = await _consume_state(user_id, connector_id, state)
     _, token_url = _resolve_urls(cfg, state_doc.get("domain"))
 
     async with httpx.AsyncClient(timeout=15) as http:
-        res = await http.post(
-            token_url,
-            data={
-                "code": code,
-                "client_id": cfg.client_id(),
-                "client_secret": cfg.client_secret(),
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-            headers={"Accept": "application/json"},
-        )
+        res = await _post_token(http, cfg, token_url, {
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        })
     if res.status_code != 200:
         logger.error(f"{connector_id} token exchange failed: {res.text}")
         raise OAuthError(f"{cfg.display_name} authorization failed — try connecting again")
@@ -206,16 +213,10 @@ async def get_valid_access_token(user_id: str, connector_id: str) -> str:
 
     _, token_url = _resolve_urls(cfg, conn.get("domain"))
     async with httpx.AsyncClient(timeout=15) as http:
-        res = await http.post(
-            token_url,
-            data={
-                "refresh_token": refresh_token,
-                "client_id": cfg.client_id(),
-                "client_secret": cfg.client_secret(),
-                "grant_type": "refresh_token",
-            },
-            headers={"Accept": "application/json"},
-        )
+        res = await _post_token(http, cfg, token_url, {
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        })
     if res.status_code != 200:
         logger.warning(f"{connector_id} token refresh failed for user {user_id}: {res.text}")
         raise OAuthError(f"{cfg.display_name} connection expired — please reconnect")
