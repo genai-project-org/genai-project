@@ -19,6 +19,7 @@ import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
 import { CHAT } from '@/constants/testIds';
 import { cn } from '@/lib/utils';
+import WorkspaceTimeline from '@/components/WorkspaceTimeline';
 
 // Each prompt has a short `title` (shown in the list) and the full `prompt` inserted on click.
 const TEMPLATE_CATEGORIES = [
@@ -162,6 +163,8 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [toolStatus, setToolStatus] = useState(null);
+  const [runPlan, setRunPlan] = useState(null);
+  const [runSteps, setRunSteps] = useState([]);
   const [meta, setMeta] = useState(null);
   const [search, setSearch] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -262,6 +265,8 @@ export default function Chat() {
     setStreamText('');
     setMeta(null);
     setToolStatus(null);
+    setRunPlan(null);
+    setRunSteps([]);
     // Optimistically add user message
     const tempUserMsg = { id: 'tmp-' + Date.now(), role: 'user', content: text, attachments: sentAttachments };
     setMessages((m) => [...m, tempUserMsg]);
@@ -285,6 +290,9 @@ export default function Chat() {
       let finalText = '';
       let convId = activeId;
       let finalMeta = null;
+      let finalPlan = null;
+      const stepMap = new Map();
+      let errText = '';
 
       while (true) {
         const { value, done } = await reader.read();
@@ -314,7 +322,15 @@ export default function Chat() {
               setStreamText(finalText);
               setToolStatus(null);
             } else if (obj.type === 'error') {
+              errText = obj.message;
               toast.error(obj.message);
+            } else if (obj.type === 'plan') {
+              finalPlan = { text: obj.text, items: obj.items };
+              setRunPlan(finalPlan);
+            } else if (obj.type === 'step') {
+              const { type: _t, ...step } = obj;
+              stepMap.set(step.id, step);
+              setRunSteps([...stepMap.values()]);
             } else if (obj.type === 'warn') {
               toast.info(obj.message);
             } else if (obj.type === 'tool_status') {
@@ -329,13 +345,17 @@ export default function Chat() {
         }
       }
       // Commit assistant message
+      if (!finalText && stepMap.size > 0) finalText = errText || 'The run ended before a final answer was produced.';
       if (finalText) {
         setMessages((m) => [...m, {
           id: 'asst-' + Date.now(), role: 'assistant', content: finalText,
           provider: finalMeta?.provider, model: finalMeta?.model,
+          plan: finalPlan, steps: [...stepMap.values()],
         }]);
       }
       setStreamText('');
+      setRunPlan(null);
+      setRunSteps([]);
       setMeta(null);
       // Refresh conversations list
       loadConversations();
@@ -550,13 +570,18 @@ export default function Chat() {
                 onFlag={toggleFlag}
               />
             ))}
+            {streaming && (runPlan || runSteps.length > 0) && (
+              <div className="pl-12">
+                <WorkspaceTimeline plan={runPlan} steps={runSteps} live />
+              </div>
+            )}
             {streaming && streamText && (
               <MessageBlock message={{ role: 'assistant', content: streamText, provider: meta?.provider, model: meta?.model, streaming: true }} />
             )}
             {streaming && !streamText && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {toolStatus || (meta ? `Streaming from ${meta.model}...` : 'Thinking...')}
+                {toolStatus || (runSteps.length > 0 ? 'Working through your request...' : meta ?`Streaming from ${meta.model}...` : 'Thinking...')}
               </div>
             )}
           </div>
@@ -720,6 +745,9 @@ function MessageBlock({ message, onEdit, onFlag }) {
                 <img key={idx} src={att.url} alt={att.filename} className="rounded-lg max-h-48 max-w-full border border-border" />
               ))}
             </div>
+          )}
+          {!isUser && (message.plan || message.steps?.length > 0) && (
+            <WorkspaceTimeline plan={message.plan} steps={message.steps} />
           )}
           <div className={cn('prose-chat', message.streaming && 'cursor-blink')}>
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>

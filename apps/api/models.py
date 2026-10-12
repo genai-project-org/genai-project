@@ -315,6 +315,7 @@ class McpConnectorPublic(BaseModel):
     requires_domain: bool = False  # oauth2 connectors with a per-store/per-tenant host (e.g. Shopify)
     domain_label: str = "Domain"
     domain_placeholder: str = ""
+    notes: str = ""  # short user-facing setup hint (e.g. where to create an API key)
     scopes: List[str]
     connected: bool
     enabled: bool = True

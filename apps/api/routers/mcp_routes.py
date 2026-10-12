@@ -36,6 +36,7 @@ async def get_connectors(user: User = Depends(get_current_user)):
             requires_domain=cfg.requires_domain,
             domain_label=cfg.domain_label,
             domain_placeholder=cfg.domain_placeholder,
+            notes=cfg.mcp_notes if cfg.mcp_status == "ready" and cfg.auth_type == "api_key" else "",
             scopes=cfg.scopes,
             connected=cfg.id in connections,
             enabled=connections.get(cfg.id, {}).get("enabled", True),

@@ -8,62 +8,108 @@ import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Loader2, MessageSquare, Plug, Search, Send } from 'lucide-react';
+import { Info, Loader2, MessageSquare, Plug, Search, Send, Zap } from 'lucide-react';
+import WorkspaceTimeline from '@/components/WorkspaceTimeline';
+import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 function fieldLabel(field) {
   return field.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function ConnectorCard({ c, connectingId, togglingId, connect, disconnect, toggleEnabled, openApiKeyDialog, openDomainDialog }) {
+const AVATAR_COLORS = ['bg-blue-500/15 text-blue-600', 'bg-violet-500/15 text-violet-600', 'bg-emerald-500/15 text-emerald-600',
+  'bg-amber-500/15 text-amber-600', 'bg-rose-500/15 text-rose-600', 'bg-cyan-500/15 text-cyan-600', 'bg-fuchsia-500/15 text-fuchsia-600'];
+
+function avatarClass(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 997;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+// connected | available (can be connected) | soon (account can be linked, actions not built yet)
+function statusOf(c) {
+  if (c.connected) return 'connected';
+  if (c.mcp_status !== 'ready') return 'soon';
+  return 'available';
+}
+
+function StatusPill({ status, enabled }) {
+  if (status === 'connected') {
+    return (
+      <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+        enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-muted text-muted-foreground')}>
+        <span className={cn('h-1.5 w-1.5 rounded-full', enabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+        {enabled ? 'Connected' : 'Paused'}
+      </span>
+    );
+  }
+  if (status === 'soon') {
+    return <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">Coming soon</span>;
+  }
+  return <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">Available</span>;
+}
+
+function ConnectorCard({ c, connectingId, togglingId, connect, disconnect, toggleEnabled, openApiKeyDialog, openDomainDialog, openUnavailableDialog }) {
+  const status = statusOf(c);
+  const needsServerSetup = c.auth_type !== 'api_key' && !c.configured;
+  const connecting = connectingId === c.id;
+  const onConnect = () => {
+    if (needsServerSetup) return openUnavailableDialog(c);
+    if (c.auth_type === 'api_key') return openApiKeyDialog(c);
+    if (c.requires_domain) return openDomainDialog(c);
+    return connect(c);
+  };
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-2 text-base">
-          {c.display_name}
-          <div className="flex items-center gap-1.5">
-            {c.auth_type === 'api_key' && (
-              <Badge variant="outline" className="text-muted-foreground">Requires API key</Badge>
-            )}
-            {c.mcp_status !== 'ready' && (
-              <Badge variant="outline" className="text-muted-foreground">Actions coming soon</Badge>
-            )}
-            {c.connected && (
+    <Card className={cn('flex flex-col transition-colors', status === 'connected' && 'border-emerald-500/30')} data-testid="connector-card" data-status={status}>
+      <CardHeader className="pb-3">
+        <div className="flex items-start gap-3">
+          <div className={cn('flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-base font-semibold', avatarClass(c.display_name))}>
+            {c.display_name.charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <CardTitle className="flex items-center justify-between gap-2 text-base">
+              <span className="truncate">{c.display_name}</span>
+              <StatusPill status={status} enabled={c.enabled} />
+            </CardTitle>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {c.mcp_status === 'ready' && (
+                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><Zap className="h-3 w-3" /> Live actions</span>
+              )}
+              <span className="text-[11px] text-muted-foreground">
+                {c.mcp_status === 'ready' ? '· ' : ''}{c.auth_type === 'api_key' ? 'API key' : 'Sign in'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <CardDescription className="pt-2">{c.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex-1 space-y-1 pb-3 text-xs text-muted-foreground">
+        {c.external_label && <div>Connected as {c.external_label}</div>}
+        {c.connected && !c.enabled && <div>Paused — the assistant won't use it until you turn it back on.</div>}
+        {!c.connected && needsServerSetup && c.mcp_status === 'ready' && (
+          <div>Sign-in for this service is being switched on for the workspace.</div>
+        )}
+        {!c.connected && c.mcp_status !== 'ready' && <div>You'll be able to connect this and use it from the Workspace soon.</div>}
+      </CardContent>
+      <CardFooter className="justify-between gap-2">
+        {c.connected ? (
+          <>
+            <Button variant="outline" size="sm" onClick={() => disconnect(c.id)}>Disconnect</Button>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              {c.enabled ? 'On' : 'Off'}
               <Switch
                 checked={c.enabled}
                 disabled={togglingId === c.id}
                 onCheckedChange={(checked) => toggleEnabled(c.id, checked)}
-                aria-label={`${c.enabled ? 'Disable' : 'Enable'} ${c.display_name}`}
+                aria-label={`${c.enabled ? 'Pause' : 'Enable'} ${c.display_name}`}
               />
-            )}
-          </div>
-        </CardTitle>
-        <CardDescription>{c.description}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {c.external_label && <div className="text-xs text-muted-foreground">as {c.external_label}</div>}
-        {c.connected && !c.enabled && (
-          <div className="text-xs text-muted-foreground">Disabled — Claude won't use this until you turn it back on.</div>
-        )}
-        {c.auth_type === 'api_key' && !c.connected && (
-          <div className="text-xs text-muted-foreground">{c.display_name} doesn't offer a login/approve flow for this — a key from their dashboard is the only option.</div>
-        )}
-        {(c.auth_type === 'oauth2' || c.auth_type === 'redirect_token') && !c.configured && (
-          <div className="text-xs text-amber-600 dark:text-amber-400">Not configured on this server yet (missing OAuth app credentials)</div>
-        )}
-      </CardContent>
-      <CardFooter>
-        {c.connected ? (
-          <Button variant="outline" size="sm" onClick={() => disconnect(c.id)}>Disconnect</Button>
-        ) : c.auth_type === 'api_key' ? (
-          <Button size="sm" onClick={() => openApiKeyDialog(c)}>Connect</Button>
-        ) : c.requires_domain ? (
-          <Button size="sm" disabled={!c.configured || connectingId === c.id} onClick={() => openDomainDialog(c)}>
-            {connectingId === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Connect'}
-          </Button>
+            </label>
+          </>
+        ) : status === 'soon' ? (
+          <Button size="sm" variant="outline" disabled>Coming soon</Button>
         ) : (
-          <Button size="sm" disabled={!c.configured || connectingId === c.id} onClick={() => connect(c)}>
-            {connectingId === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Connect'}
+          <Button size="sm" disabled={connecting} onClick={onConnect}>
+            {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Connect'}
           </Button>
         )}
       </CardFooter>
@@ -77,6 +123,9 @@ export default function Connectors() {
   const [connectingId, setConnectingId] = useState(null);
   const [togglingId, setTogglingId] = useState(null);
   const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all'); // all | connected | available
+  const [category, setCategory] = useState('All');
+  const [unavailableConnector, setUnavailableConnector] = useState(null);
   const popupRef = useRef(null);
   const popupPollRef = useRef(null);
 
@@ -268,17 +317,27 @@ export default function Connectors() {
     }
   };
 
+  const categories = useMemo(() => ['All', ...[...new Set(connectors.map((c) => c.category))].sort()], [connectors]);
+  const connectedCount = connectors.filter((c) => c.connected).length;
+  const liveCount = connectors.filter((c) => c.mcp_status === 'ready').length;
+
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const filtered = q
-      ? connectors.filter((c) => c.display_name.toLowerCase().includes(q) || c.category.toLowerCase().includes(q))
-      : connectors;
+    const filtered = connectors.filter((c) => {
+      if (q && !(c.display_name.toLowerCase().includes(q) || c.category.toLowerCase().includes(q) || c.description.toLowerCase().includes(q))) return false;
+      if (category !== 'All' && c.category !== category) return false;
+      if (filter === 'connected') return c.connected;
+      if (filter === 'available') return !c.connected && c.mcp_status === 'ready';
+      return true;
+    });
+    const rank = (c) => (c.connected ? 0 : c.mcp_status === 'ready' ? 1 : 2);
     const byCategory = {};
     for (const c of filtered) {
       (byCategory[c.category] ||= []).push(c);
     }
+    for (const list of Object.values(byCategory)) list.sort((a, b) => rank(a) - rank(b) || a.display_name.localeCompare(b.display_name));
     return Object.entries(byCategory).sort(([a], [b]) => a.localeCompare(b));
-  }, [connectors, search]);
+  }, [connectors, search, filter, category]);
 
   if (loading) {
     return (
@@ -290,27 +349,78 @@ export default function Connectors() {
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold flex items-center gap-2"><Plug className="h-5 w-5" /> Connectors</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Connect your own accounts, use the switch to turn a connected service on or off, then just ask for
-          things in{' '}
-          <Link to="/chat" className="text-primary underline underline-offset-4 inline-flex items-center gap-1">
-            AI Workspace <MessageSquare className="h-3.5 w-3.5" />
-          </Link>
-          {' '}— Claude will use whichever connected services it needs to get it done.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-2xl">
+          <h1 className="text-2xl font-semibold flex items-center gap-2"><Plug className="h-5 w-5" /> Connectors</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Connect your own accounts, then just describe a goal in{' '}
+            <Link to="/chat" className="text-primary underline underline-offset-4 inline-flex items-center gap-1">
+              AI Workspace <MessageSquare className="h-3.5 w-3.5" />
+            </Link>
+            {' '}— the assistant plans the steps and uses whichever connected services it needs.
+          </p>
+        </div>
+        <div className="flex gap-3 text-center">
+          <div className="rounded-lg border border-border px-4 py-2">
+            <div className="text-xl font-semibold">{connectedCount}</div>
+            <div className="text-[11px] text-muted-foreground">Connected</div>
+          </div>
+          <div className="rounded-lg border border-border px-4 py-2">
+            <div className="text-xl font-semibold">{liveCount}</div>
+            <div className="text-[11px] text-muted-foreground">With live actions</div>
+          </div>
+          <div className="rounded-lg border border-border px-4 py-2">
+            <div className="text-xl font-semibold">{connectors.length}</div>
+            <div className="text-[11px] text-muted-foreground">Total</div>
+          </div>
+        </div>
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-        <Input placeholder="Search connectors..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative w-full max-w-sm">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="Search connectors..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
+          </div>
+          <div className="inline-flex rounded-lg border border-border p-0.5 text-sm">
+            {[['all', 'All'], ['connected', 'Connected'], ['available', 'Ready to connect']].map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => setFilter(v)}
+                className={cn('rounded-md px-3 py-1', filter === v ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:text-foreground')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setCategory(cat)}
+              className={cn('rounded-full border px-3 py-1 text-xs transition-colors',
+                category === cat ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:border-primary/40')}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {grouped.length === 0 && (
+        <div className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted-foreground">
+          No connectors match your filters.{' '}
+          <button className="text-primary underline underline-offset-4" onClick={() => { setSearch(''); setFilter('all'); setCategory('All'); }}>Clear filters</button>
+        </div>
+      )}
 
       <div className="space-y-6">
         {grouped.map(([category, items]) => (
           <div key={category} className="space-y-3">
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{category}</h2>
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+              {category} <span className="font-normal normal-case">· {items.length}</span>
+            </h2>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {items.map((c) => (
                 <ConnectorCard
@@ -323,6 +433,7 @@ export default function Connectors() {
                   toggleEnabled={toggleEnabled}
                   openApiKeyDialog={openApiKeyDialog}
                   openDomainDialog={openDomainDialog}
+                  openUnavailableDialog={setUnavailableConnector}
                 />
               ))}
             </div>
@@ -350,17 +461,8 @@ export default function Connectors() {
         {result && (
           <Card>
             <CardContent className="pt-6 space-y-3 text-sm">
+              <WorkspaceTimeline plan={result.plan} steps={result.steps} />
               <div className="whitespace-pre-wrap">{result.reply}</div>
-              {result.tool_calls?.length > 0 && (
-                <div className="border-t pt-3 space-y-1">
-                  <div className="text-xs text-muted-foreground">Actions taken:</div>
-                  {result.tool_calls.map((tc, i) => (
-                    <div key={i} className="text-xs text-muted-foreground">
-                      {tc.success ? '✓' : '✗'} {tc.connector_id}.{tc.tool_name}
-                    </div>
-                  ))}
-                </div>
-              )}
             </CardContent>
           </Card>
         )}
@@ -375,6 +477,11 @@ export default function Connectors() {
               {apiKeyDialogConnector?.display_name}'s own dashboard. This is stored encrypted and only used on your behalf.
             </DialogDescription>
           </DialogHeader>
+          {apiKeyDialogConnector?.notes && (
+            <div className="flex gap-2 rounded-md bg-muted/60 p-2.5 text-xs text-muted-foreground">
+              <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" /> {apiKeyDialogConnector.notes}
+            </div>
+          )}
           <div className="space-y-3">
             {apiKeyDialogConnector?.credential_fields.map((field) => (
               <div key={field} className="space-y-1.5">
@@ -393,6 +500,21 @@ export default function Connectors() {
               {savingApiKey ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
               Connect
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!unavailableConnector} onOpenChange={(open) => !open && setUnavailableConnector(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{unavailableConnector?.display_name} is almost ready</DialogTitle>
+            <DialogDescription>
+              {unavailableConnector?.display_name} is supported, but sign-in hasn't been switched on for this workspace yet.
+              As soon as it is, the Connect button will work right here — nothing for you to fix.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setUnavailableConnector(null)}>Got it</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
