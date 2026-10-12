@@ -229,6 +229,8 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
         provider = None
         model = None
         full_text = ""
+        plan_evt = None
+        steps_by_id = {}
         try:
             async for evt in _pick_response_stream(user, conv_id, req, history, has_tools):
                 if evt["type"] == "meta":
@@ -242,7 +244,13 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                     full_text = evt.get("content", full_text) or full_text
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     break
-                elif evt["type"] == "tool_status":
+                elif evt["type"] in ("tool_status", "plan", "step"):
+                    # Orchestration timeline events: forwarded live, and plan/steps are kept so the
+                    # saved reply can re-render its timeline when the conversation is reopened.
+                    if evt["type"] == "plan":
+                        plan_evt = {"text": evt["text"], "items": evt["items"]}
+                    elif evt["type"] == "step":
+                        steps_by_id[evt["id"]] = {k: v for k, v in evt.items() if k != "type"}
                     yield f"data: {json.dumps(evt)}\n\n"
                 elif evt["type"] == "warn":
                     yield f"data: {json.dumps(evt)}\n\n"
@@ -260,6 +268,8 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                     provider=provider,
                     model=model,
                     credits_used=total_cost,
+                    plan=plan_evt,
+                    steps=[s for s in steps_by_id.values() if s["status"] in ("done", "failed")],
                 )
                 asst_res = await messages_col.insert_one(asst_msg.to_mongo())
                 # Central spend (window + wallet + provider tracking)

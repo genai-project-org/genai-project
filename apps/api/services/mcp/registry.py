@@ -64,6 +64,10 @@ class ConnectorConfig:
     # stdio only: the single decrypted access token is injected under this
     # env var name (never as a CLI argument — that would leak into `ps`).
     token_env_var: Optional[str] = None
+    # Some providers (Notion) want HTTP Basic client auth and/or a JSON body
+    # on the token endpoint instead of form-encoded client_id/secret.
+    token_basic_auth: bool = False
+    token_request_json: bool = False
 
     # ---- api_key / redirect_token fields ----
     # api_key: the user pastes these values directly (no OAuth exists at the
@@ -158,10 +162,8 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         # github.com/settings/developers and set these two env vars.
         client_id_env="GITHUB_MCP_CLIENT_ID",
         client_secret_env="GITHUB_MCP_CLIENT_SECRET",
-        transport="http",
-        # Official hosted remote MCP server — verify this URL is still
-        # current in GitHub's MCP docs before relying on it.
-        http_url="https://api.githubcopilot.com/mcp/",
+        transport="stdio", stdio_command=sys.executable,
+        stdio_args=["-m", "services.mcp.servers.github_server"], token_env_var="GITHUB_ACCESS_TOKEN",
     ),
     "slack": ConnectorConfig(
         id="slack",
@@ -184,17 +186,15 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         description="Search, read, and edit pages in your Notion workspace.",
         category="Productivity & Docs",
         scopes=[],
-        # Notion's remote-MCP OAuth flow needs to be re-verified against
-        # their current docs (it may use OAuth 2.1 dynamic client
-        # registration instead of a manually-issued client id/secret) —
-        # these placeholders should be confirmed/updated when this
-        # connector is actually wired up and tested.
         authorize_url="https://api.notion.com/v1/oauth/authorize",
         token_url="https://api.notion.com/v1/oauth/token",
         client_id_env="NOTION_CLIENT_ID",
         client_secret_env="NOTION_CLIENT_SECRET",
-        transport="http",
-        http_url="https://mcp.notion.com/mcp",
+        extra_authorize_params={"owner": "user"},
+        # Notion's token endpoint wants HTTP Basic client auth + a JSON body.
+        token_basic_auth=True, token_request_json=True,
+        transport="stdio", stdio_command=sys.executable,
+        stdio_args=["-m", "services.mcp.servers.notion_server"], token_env_var="NOTION_ACCESS_TOKEN",
     ),
 
     # ============== Communication ==============
@@ -365,18 +365,18 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "asana": ConnectorConfig(
         id="asana", display_name="Asana", category="Project Management",
         description="Read and manage your Asana tasks, projects, and comments.",
-        scopes=["tasks:read", "tasks:write", "projects:read", "projects:write", "users:read"],
-        authorize_url="https://app.asana.com/-/oauth_authorize", token_url="https://app.asana.com/-/oauth_token",
-        client_id_env="ASANA_CLIENT_ID", client_secret_env="ASANA_CLIENT_SECRET",
-        transport="http", http_url="https://mcp.asana.com/v2/mcp",
+        auth_type="api_key", credential_fields=["access_token"], credential_env_map={"access_token": "ASANA_ACCESS_TOKEN"},
+        transport="stdio", stdio_command=sys.executable,
+        stdio_args=["-m", "services.mcp.servers.asana_server"],
+        mcp_notes="Paste a Personal Access Token from app.asana.com/0/my-apps.",
     ),
     "linear": ConnectorConfig(
         id="linear", display_name="Linear", category="Project Management",
         description="Read and manage your Linear issues, projects, cycles, and comments.",
-        scopes=["read", "write", "issues:create", "comments:create"],
-        authorize_url="https://linear.app/oauth/authorize", token_url="https://api.linear.app/oauth/token",
-        client_id_env="LINEAR_CLIENT_ID", client_secret_env="LINEAR_CLIENT_SECRET",
-        transport="http", http_url="https://mcp.linear.app/mcp",
+        auth_type="api_key", credential_fields=["api_key"], credential_env_map={"api_key": "LINEAR_API_KEY"},
+        transport="stdio", stdio_command=sys.executable,
+        stdio_args=["-m", "services.mcp.servers.linear_server"],
+        mcp_notes="Create a personal API key at linear.app/settings/account/security.",
     ),
     "atlassian_jira": ConnectorConfig(
         id="atlassian_jira", display_name="Atlassian Jira", category="Project Management",
@@ -401,9 +401,8 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://trello.com/1/authorize",
         client_id_env="TRELLO_API_KEY",
         credential_fields=["token"], credential_env_map={"token": "TRELLO_TOKEN"},
-        mcp_status="needs_server",
-        mcp_notes=("Community npm packages exist (e.g. trello-mcp-server) but maintenance is unverified — build a "
-                   "thin stdio wrapper over the REST API using TRELLO_API_KEY + the per-user TRELLO_TOKEN."),
+        transport="stdio", stdio_command=sys.executable,
+        stdio_args=["-m", "services.mcp.servers.trello_server"],
     ),
     "clickup": ConnectorConfig(
         id="clickup", display_name="ClickUp", category="Project Management",
@@ -435,15 +434,11 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "airtable": ConnectorConfig(
         id="airtable", display_name="Airtable", category="Project Management",
         description="Read and manage your Airtable bases, tables, and records.",
-        scopes=["data.records:read", "data.records:write", "schema.bases:read", "schema.bases:write", "user.email:read"],
-        authorize_url="https://airtable.com/oauth2/v1/authorize", token_url="https://airtable.com/oauth2/v1/token",
-        client_id_env="AIRTABLE_CLIENT_ID", client_secret_env="AIRTABLE_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes=("PKCE is MANDATORY on every authorize request (not optional) — oauth_service.py doesn't implement "
-                   "PKCE yet, so this needs an engine change before it can work, not just a server. Community npm "
-                   "`@felores/airtable-mcp-server` as a reference once PKCE support exists."),
+        auth_type="api_key", credential_fields=["access_token"], credential_env_map={"access_token": "AIRTABLE_ACCESS_TOKEN"},
+        transport="stdio", stdio_command=sys.executable,
+        stdio_args=["-m", "services.mcp.servers.airtable_server"],
+        mcp_notes="Create a personal access token at airtable.com/create/tokens (scopes: data.records:read, data.records:write, schema.bases:read).",
     ),
-
     # ============== Developer Tools ==============
     "gitlab": ConnectorConfig(
         id="gitlab", display_name="GitLab", category="Developer Tools",
