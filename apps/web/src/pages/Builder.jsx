@@ -372,7 +372,8 @@ function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
       const { data } = await api.post(`/builder/projects/${project.id}/github/push`,
         { repo: repo.trim(), commit_message: commit.trim() || null, private: isPrivate });
       setResult(data);
-      toast.success(data.created ? `Created ${data.repo} and pushed ${data.pushed.length} files` : `Pushed ${data.pushed.length} files`);
+      if (data.unchanged) toast.info('Already up to date. Make a change in the Builder, then push again.');
+      else toast.success(data.created ? `Created ${data.repo} and pushed ${data.pushed.length} files` : `Pushed ${data.pushed.length} files in one commit`);
       onDone && onDone();
     } catch (e) { toast.error(e.response?.data?.detail || 'Push failed'); }
     finally { setLoading(false); }
@@ -413,10 +414,9 @@ function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
             </label>
             {result && (
               <div className="rounded-md bg-primary/5 border border-primary/20 p-3 text-xs">
-                <div>{result.created ? 'Repository created. ' : ''}Pushed: {result.pushed.length} files</div>
+                <div>{result.unchanged ? 'Already up to date. Nothing new to push.' : `${result.created ? 'Repository created. ' : ''}Pushed ${result.pushed.length} files in one commit`}</div>
                 {result.commit_message && <div className="text-muted-foreground">Commit: {result.commit_message}</div>}
-                {result.unchanged && <div>No changes since the last push.</div>}
-                {result.errors.length > 0 && <div className="text-destructive">Errors: {result.errors.length}</div>}
+                                {result.errors.length > 0 && <div className="text-destructive">Errors: {result.errors.length}</div>}
                 <a href={result.repo_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{result.repo_url}</a>
               </div>
             )}

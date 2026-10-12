@@ -480,8 +480,8 @@ async def github_push(project_id: str, req: GithubPushRequest, user: User = Depe
         files = doc.get("files", [])
         res = await _single_commit(http, repo, files, message)
         if res is not None:
-            pushed = res["paths"]
             unchanged = res["unchanged"]
+            pushed = [] if unchanged else res["paths"]
         else:
             # Repository has no commits yet: the Contents API creates the first commit(s).
             for f in files:
@@ -504,7 +504,7 @@ async def github_push(project_id: str, req: GithubPushRequest, user: User = Depe
                     payload={"project_id": project_id, "repo": repo, "created": created,
                              "pushed": len(pushed), "errors": len(errors), "unchanged": unchanged})
     return {"pushed": pushed, "errors": errors, "repo": repo, "created": created, "unchanged": unchanged,
-            "commit_message": message.split("\n", 1)[0], "repo_url": f"https://github.com/{repo}"}
+            "commit_message": None if unchanged else message.split("\n", 1)[0], "repo_url": f"https://github.com/{repo}"}
 
 
 @router.get("/github/status")
