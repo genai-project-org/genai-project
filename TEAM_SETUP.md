@@ -30,8 +30,8 @@ If you're a fresh Claude Code session picking this repo up: always ask whose nam
 
 ## Structure
 - `apps/api` — FastAPI backend (from IEMA_AI_API_V3, history preserved)
-- `apps/web` — React web app (from supercreater-ai-frontend/frontend, history preserved)
-- `apps/mobile` — Expo mobile app (from supercreater-ai-frontend/mobile, history preserved)
+- `apps/web` — React web app (from iema-ai-frontend/frontend, history preserved)
+- `apps/mobile` — Expo mobile app (from iema-ai-frontend/mobile, history preserved)
 
 ## Proposed refactor (post-migration cleanup)
 

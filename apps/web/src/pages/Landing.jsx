@@ -70,7 +70,7 @@ const MODULES = [
   {
     Icon: Layers, name: 'More Modules Coming', slug: 'more',
     tagline: 'Plug-in intelligence.',
-    body: 'supercreater.ai is a growing platform. New intelligence modules ship every month. Your credits work across all of them.',
+    body: 'IEMA.ai is a growing platform. New intelligence modules ship every month. Your credits work across all of them.',
   },
 ];
 
@@ -84,7 +84,7 @@ export default function Landing() {
             <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center">
               <Sparkles className="h-4 w-4 text-primary-foreground" />
             </div>
-            <span className="font-display font-semibold tracking-tight">supercreater<span className="text-primary">.</span>ai</span>
+            <span className="font-display font-semibold tracking-tight">IEMA<span className="text-primary">.</span>ai</span>
           </Link>
           <nav className="hidden md:flex items-center gap-6 text-sm text-muted-foreground">
             <a href="#modules" className="hover:text-foreground">Modules</a>
@@ -114,7 +114,7 @@ export default function Landing() {
             build a career, and grow.
           </h1>
           <p className="mt-6 text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-            supercreater.ai is a super platform for students, professionals and founders — chat, career, research,
+            IEMA.ai is a super platform for students, professionals and founders — chat, career, research,
             resume, interviews and more, all powered by top LLMs and unified by one credit wallet.
           </p>
           <div className="mt-10 flex items-center justify-center gap-3 flex-wrap">
@@ -224,7 +224,7 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Sparkles className="h-4 w-4 text-primary" />
-            <span>supercreater.ai © 2026 — Own the data. Grow every day.</span>
+            <span>IEMA.ai © 2026 — Own the data. Grow every day.</span>
           </div>
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
             <Link to="/privacy" className="hover:text-foreground">Privacy</Link>

@@ -225,7 +225,7 @@ flow bugs that were silently breaking both platforms.</p>
 </table>
 
 <h3>3.2 Code: enabling Android observer mode</h3>
-<p><span class="file-path">supercreater-ai-frontend/mobile/src/services/revenuecat.js</span> previously
+<p><span class="file-path">iema-ai-frontend/mobile/src/services/revenuecat.js</span> previously
 hard-gated on <code>Platform.OS !== 'ios'</code>, meaning Android never configured RevenueCat at all.
 This was relaxed to configure on both platforms, selecting the correct SDK key per platform:</p>
 <pre><code>const REVENUECAT_API_KEY = Platform.select({
@@ -460,7 +460,7 @@ resolution on the App&nbsp;Store side.</p>
 
 <h2 id="release">9. Build &amp; Release Process</h2>
 <h3>9.1 Commands used</h3>
-<pre>cd supercreater-ai-frontend/mobile
+<pre>cd iema-ai-frontend/mobile
 
 # Android — build only (manual upload to Play Console afterward)
 npx eas build --platform android --profile production

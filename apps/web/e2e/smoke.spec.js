@@ -19,7 +19,7 @@ test('the app loads without crashing and renders the landing page', async ({ pag
 
   await page.goto('/');
 
-  await expect(page).toHaveTitle(/supercreater\.ai/);
+  await expect(page).toHaveTitle(/IEMA.ai\.ai/);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('learn');
   expect(pageErrors).toEqual([]);
 });

@@ -65,13 +65,13 @@ api_router = APIRouter(prefix="/api")
 async def root():
     return {
         "status": "ok",
-        "service": "supercreater.ai API",
+        "service": "IEMA.ai API",
         "version": "2.0.0"
     }
 
 @api_router.get("/")
 async def root():
-    return {"name": "supercreater.ai v2", "version": "2.0.0", "status": "ok"}
+    return {"name": "IEMA.ai v2", "version": "2.0.0", "status": "ok"}
 
 
 @api_router.get("/health")

@@ -177,7 +177,7 @@ export default function Sidebar({ onMobileClose, mobile = false }) {
                 <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center flex-shrink-0">
                   <Sparkles className="h-4 w-4 text-primary-foreground" strokeWidth={2} />
                 </div>
-                <span className="font-display font-semibold text-[15px] tracking-tight">supercreater<span className="text-primary">.</span>ai</span>
+                <span className="font-display font-semibold text-[15px] tracking-tight">IEMA<span className="text-primary">.</span>ai</span>
               </NavLink>
               {!mobile && (
                 <Button

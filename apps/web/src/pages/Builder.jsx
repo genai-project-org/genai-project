@@ -17,12 +17,12 @@ import { cn } from '@/lib/utils';
 const COPY = {
   static: {
     title: 'Static Builder',
-    blurb: 'Describe an app. supercreater drops a working single-page project you can preview, edit, share, or push to GitHub.',
+    blurb: 'Describe an app. IEMA.ai drops a working single-page project you can preview, edit, share, or push to GitHub.',
     placeholder: 'e.g. Build a landing page for a plant-based food startup with hero, features, testimonials, and email signup form',
   },
   react: {
     title: 'Dynamic Builder',
-    blurb: 'Describe an app. supercreater generates a real multi-file React project — components, hooks, and all — bundled live in your browser.',
+    blurb: 'Describe an app. IEMA.ai generates a real multi-file React project — components, hooks, and all — bundled live in your browser.',
     placeholder: 'e.g. Build a kanban board with three columns, add/edit cards, and move them between columns',
   },
 };
@@ -320,7 +320,7 @@ function CreateDialog({ open, onOpenChange, onCreated, kind = 'static', copy = C
 function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
   const [pat, setPat] = useState('');
   const [repo, setRepo] = useState('');
-  const [commit, setCommit] = useState('supercreater.ai Builder push');
+  const [commit, setCommit] = useState('IEMA.ai Builder push');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
