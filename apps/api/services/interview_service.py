@@ -62,8 +62,10 @@ ACTIVE_STATUSES = ("created", "technical_in_progress", "behavioral_in_progress")
 # only the resulting interviewer reply is, as transcript turn_index 0.
 OPENING_CUE = (
     "[SESSION START] The candidate has just joined and can see and hear you now. "
-    "Greet them warmly in 1-2 sentences, briefly set expectations for this round, "
-    "then ask your first question directly. Do not wait for them to speak first."
+    "Greet them warmly and introduce yourself in one sentence, briefly set expectations for this round "
+    "(what you will cover and how it will flow), and then ASK THE CANDIDATE TO INTRODUCE THEMSELVES "
+    "(background, experience, what they have worked on recently). Do NOT pose any problem or technical "
+    "question yet: wait for their introduction first. Do not wait for them to speak before greeting."
 )
 
 SUPPORTED_CODING_LANGUAGES = {"python", "javascript", "cpp", "java"}
