@@ -105,9 +105,17 @@ export default function InterviewSetup() {
   const streamRef = useRef(null);
   const micBarRef = useRef(null);
   const rafRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const micOkRef = useRef(false); // mirrored into micOk state; ref avoids stale closures inside the rAF loop
   const [camError, setCamError] = useState('');
   const [faceDetected, setFaceDetected] = useState(false);
   const [checkingReady, setCheckingReady] = useState(true);
+  const [micOk, setMicOk] = useState(false); // flips true once real audio is actually measured, not just "permission granted"
+  const [micDevices, setMicDevices] = useState([]);
+  const [camDevices, setCamDevices] = useState([]);
+  const [selectedMicId, setSelectedMicId] = useState('');
+  const [selectedCamId, setSelectedCamId] = useState('');
+  const [switchingDevice, setSwitchingDevice] = useState(false);
   const fullscreenSupported = typeof document !== 'undefined' && !!document.fullscreenEnabled;
   // 'checking' | 'good' | 'slow' | 'down'
   const [netStatus, setNetStatus] = useState('checking');
@@ -175,6 +183,95 @@ export default function InterviewSetup() {
       .finally(() => setProfileLoading(false));
   }, []);
 
+  // Tears down and rebuilds the Web Audio analyser pipeline for whatever
+  // audio track `stream` currently has — called once on initial acquisition
+  // and again every time the candidate switches microphones, since a
+  // MediaStreamAudioSourceNode is bound to the track it was created from and
+  // does not follow a track being swapped out from under it.
+  const attachMicMeter = async (stream) => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (audioCtxRef.current) { try { await audioCtxRef.current.close(); } catch { /* noop */ } }
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtxRef.current = audioCtx;
+    // A freshly-created AudioContext starts SUSPENDED in Chrome unless resumed
+    // from a direct user gesture — and by the time we get here we're already
+    // past the getUserMedia() await, outside that gesture window. Without this
+    // explicit resume(), analyser.getByteTimeDomainData() silently returns
+    // flat/near-silent data forever: the mic level bar never moves even
+    // though the microphone itself is working fine. Same bug class as
+    // playInterviewerAudio's documented AudioContext issue in
+    // InterviewSession.jsx, just on the input side instead of playback.
+    try { await audioCtx.resume(); } catch { /* best-effort */ }
+
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    const MIC_OK_THRESHOLD = 0.08; // low enough to catch normal speech, high enough to ignore electrical noise floor
+    const tick = () => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+      const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
+      if (micBarRef.current) micBarRef.current.style.width = `${Math.round(level * 100)}%`;
+      if (level > MIC_OK_THRESHOLD && !micOkRef.current) {
+        micOkRef.current = true;
+        setMicOk(true);
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    tick();
+  };
+
+  const refreshDeviceList = async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setMicDevices(devices.filter((d) => d.kind === 'audioinput'));
+      setCamDevices(devices.filter((d) => d.kind === 'videoinput'));
+    } catch { /* best-effort — device labels just won't populate */ }
+  };
+
+  // Swaps ONE track (audio or video) on the live stream for a different
+  // physical device, leaving the other track untouched — used both by the
+  // device picker below and available the same way mid-interview (see
+  // InterviewSession.jsx's own copy of this pattern). Builds a NEW
+  // MediaStream rather than mutating the existing one in place: several
+  // consumers (the video element's rendering, this file's analyser, the live
+  // session's evidence-clip recorder) only reliably pick up a changed track
+  // when they see an actual new stream/object reference, not an in-place
+  // mutation of one they already hold.
+  const switchDevice = async (kind, deviceId) => {
+    if (!streamRef.current || !deviceId) return;
+    setSwitchingDevice(true);
+    try {
+      const constraints = kind === 'audio' ? { audio: { deviceId: { exact: deviceId } } } : { video: { deviceId: { exact: deviceId } } };
+      const tempStream = await navigator.mediaDevices.getUserMedia(constraints);
+      const newTrack = kind === 'audio' ? tempStream.getAudioTracks()[0] : tempStream.getVideoTracks()[0];
+      const keepTracks = kind === 'audio' ? streamRef.current.getVideoTracks() : streamRef.current.getAudioTracks();
+      const oldTracks = kind === 'audio' ? streamRef.current.getAudioTracks() : streamRef.current.getVideoTracks();
+      oldTracks.forEach((t) => t.stop());
+
+      const newStream = new MediaStream([...keepTracks, newTrack]);
+      streamRef.current = newStream;
+      if (videoRef.current) videoRef.current.srcObject = newStream;
+
+      if (kind === 'audio') {
+        setSelectedMicId(deviceId);
+        micOkRef.current = false;
+        setMicOk(false); // re-verify the NEW device actually produces sound before letting the candidate proceed
+        await attachMicMeter(newStream);
+      } else {
+        setSelectedCamId(deviceId);
+      }
+    } catch (e) {
+      toast.error(`Could not switch ${kind === 'audio' ? 'microphone' : 'camera'} — ${e?.message || 'try again'}.`);
+    } finally {
+      setSwitchingDevice(false);
+    }
+  };
+
   // Acquire camera+mic once we reach the system-check step; release on unmount
   // or when leaving the wizard. This is the ONE getUserMedia call for setup —
   // the live session (InterviewSession.jsx) opens its own on entry.
@@ -184,28 +281,20 @@ export default function InterviewSetup() {
     (async () => {
       setCheckingReady(true);
       setCamError('');
+      micOkRef.current = false;
+      setMicOk(false);
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
 
-        // Mic level meter
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-        const data = new Uint8Array(analyser.fftSize);
-        const tick = () => {
-          analyser.getByteTimeDomainData(data);
-          let sum = 0;
-          for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
-          const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
-          if (micBarRef.current) micBarRef.current.style.width = `${Math.round(level * 100)}%`;
-          rafRef.current = requestAnimationFrame(tick);
-        };
-        tick();
+        setSelectedMicId(stream.getAudioTracks()[0]?.getSettings().deviceId || '');
+        setSelectedCamId(stream.getVideoTracks()[0]?.getSettings().deviceId || '');
+        await refreshDeviceList();
+        navigator.mediaDevices.addEventListener?.('devicechange', refreshDeviceList);
+
+        await attachMicMeter(stream);
 
         // Face detection (same TinyFaceDetector model the live session's
         // proctoring hook uses) — here it's purely informational.
@@ -234,13 +323,16 @@ export default function InterviewSetup() {
 
     return () => {
       cancelled = true;
+      navigator.mediaDevices.removeEventListener?.('devicechange', refreshDeviceList);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
       if (streamRef.current) {
         if (streamRef.current._detectLoop) clearInterval(streamRef.current._detectLoop);
         streamRef.current.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stepName]);
 
   // Network check — pings the API's lightweight /health endpoint (no auth,
@@ -311,11 +403,14 @@ export default function InterviewSetup() {
     if (stepName === 'Pack') return !!selectedGrantId;
     if (stepName === 'Topic') return !!topic && !!seniority;
     // System check genuinely gates progress — there's no point entering a
-    // proctored, voice-driven interview with no camera/mic access or no
-    // reachable server. "Slow" network and "no face detected" are
-    // advisory-only (lighting/angle/connection quality vary too much to
-    // hard-block on), but a flat-out failure on either doesn't.
-    if (stepName === 'System check') return !camError && netStatus !== 'down' && netStatus !== 'checking';
+    // proctored, voice-driven interview with no camera/mic access, a mic
+    // that doesn't actually register audio, or no reachable server. "Slow"
+    // network and "no face detected" stay advisory-only (lighting/angle/
+    // connection quality vary too much to hard-block on), but a dead mic or
+    // a flat-out connectivity failure does.
+    if (stepName === 'System check') {
+      return !camError && netStatus !== 'down' && netStatus !== 'checking' && micOk && !switchingDevice;
+    }
     return true;
   };
 
@@ -341,7 +436,15 @@ export default function InterviewSetup() {
       }
       const { data } = await api.post('/interview/sessions', body);
       setConsentOpen(false);
-      navigate(`/interview/${data.id}`, { state: { language: isDsaTopic ? language : null } });
+      // Carry the EXACT camera/mic the candidate verified (and may have had
+      // to switch to) in system check forward into the live session — it
+      // opens its own separate getUserMedia() call on entry (see its own
+      // comment on why), which otherwise silently falls back to the
+      // browser/OS default device and can reintroduce the very problem the
+      // system check's device picker exists to let the candidate fix.
+      navigate(`/interview/${data.id}`, {
+        state: { language: isDsaTopic ? language : null, micDeviceId: selectedMicId || null, camDeviceId: selectedCamId || null },
+      });
     } catch (e) {
       toast.error(detailToString(e, 'Failed to start interview'));
       setCreating(false);
@@ -633,14 +736,47 @@ export default function InterviewSetup() {
                       <span className="flex items-center gap-1 text-amber-500"><XCircle className="h-3.5 w-3.5" /> No face detected</span>
                     )}
                   </div>
+                  {camDevices.length > 1 && (
+                    <div className="px-3 pb-3">
+                      <Select value={selectedCamId} onValueChange={(v) => switchDevice('video', v)} disabled={switchingDevice}>
+                        <SelectTrigger className="h-8 text-xs" data-testid="interview-camera-select"><SelectValue placeholder="Choose a camera" /></SelectTrigger>
+                        <SelectContent>
+                          {camDevices.map((d, i) => (
+                            <SelectItem key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-4">
                   <div className="rounded-lg border border-border bg-card p-4">
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2"><Mic className="h-3.5 w-3.5" /> Microphone level</div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="flex items-center gap-1.5 text-xs text-muted-foreground"><Mic className="h-3.5 w-3.5" /> Microphone level</span>
+                      {checkingReady ? (
+                        <span className="text-xs text-muted-foreground">Checking…</span>
+                      ) : micOk ? (
+                        <span className="flex items-center gap-1 text-emerald-500 text-xs"><CheckCircle2 className="h-3.5 w-3.5" /> Mic OK</span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-amber-500 text-xs"><XCircle className="h-3.5 w-3.5" /> No audio detected yet</span>
+                      )}
+                    </div>
                     <div className="h-2 rounded-full bg-muted overflow-hidden">
                       <div ref={micBarRef} className="h-full bg-primary transition-[width] duration-75" style={{ width: '0%' }} />
                     </div>
-                    <p className="text-[11px] text-muted-foreground mt-2">Speak normally — the bar should move.</p>
+                    <p className="text-[11px] text-muted-foreground mt-2">Speak normally — the bar should move, and must register once before you can continue.</p>
+                    {micDevices.length > 1 && (
+                      <div className="mt-3">
+                        <Select value={selectedMicId} onValueChange={(v) => switchDevice('audio', v)} disabled={switchingDevice}>
+                          <SelectTrigger className="h-8 text-xs" data-testid="interview-mic-select"><SelectValue placeholder="Choose a microphone" /></SelectTrigger>
+                          <SelectContent>
+                            {micDevices.map((d, i) => (
+                              <SelectItem key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                   </div>
                   <div className="rounded-lg border border-border bg-card p-4" data-testid="interview-network-check">
                     <div className="flex items-center justify-between">

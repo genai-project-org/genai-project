@@ -38,13 +38,24 @@ def _connector_or_raise(connector_id: str) -> ConnectorConfig:
     return cfg
 
 
-async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str) -> str:
+def _resolve_urls(cfg: ConnectorConfig, domain: Optional[str]) -> tuple:
+    if not cfg.requires_domain:
+        return cfg.authorize_url, cfg.token_url
+    if not domain:
+        raise OAuthError(f"{cfg.display_name} needs your {cfg.domain_label.lower()} first")
+    # Accept either a bare subdomain or the full host the user is likely to paste.
+    host = domain.strip().lower().removeprefix("https://").removeprefix("http://").rstrip("/")
+    return cfg.authorize_url.format(domain=host), cfg.token_url.format(domain=host)
+
+
+async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str, domain: Optional[str] = None) -> str:
     cfg = _connector_or_raise(connector_id)
     if not cfg.is_configured():
         raise OAuthError(
             f"{cfg.display_name} is not configured on this server "
             f"(missing {cfg.client_id_env}/{cfg.client_secret_env})"
         )
+    authorize_url, _ = _resolve_urls(cfg, domain)
     # Prefixing the opaque nonce with the connector id is purely a frontend
     # routing convenience (one generic /connectors callback page can tell
     # which connector a redirect belongs to without a second round trip) —
@@ -55,6 +66,7 @@ async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str
         "state": state,
         "user_id": user_id,
         "connector_id": connector_id,
+        "domain": domain,  # re-read at exchange_code time to resolve the same per-store token_url
         "created_at": now_utc(),  # real BSON date — the TTL index on this collection needs it
     })
     params = {
@@ -65,22 +77,68 @@ async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str
         **({"scope": " ".join(cfg.scopes)} if cfg.scopes else {}),
         **cfg.extra_authorize_params,
     }
+    return f"{authorize_url}?{urlencode(params)}"
+
+
+def build_redirect_token_url(connector_id: str, redirect_uri: str, app_name: str = "AI Workspace") -> str:
+    """Trello-style flow: no client secret, no server-side code exchange — the
+    per-user token comes back directly in the redirect's URL fragment (see
+    ConnectorOAuthCallback.jsx), which the popup posts to the opener for
+    routers/mcp_routes.py's POST /connections/{id}/redirect-token to store.
+    """
+    cfg = _connector_or_raise(connector_id)
+    if cfg.auth_type != "redirect_token":
+        raise OAuthError(f"{connector_id} is not a redirect_token connector")
+    if not cfg.is_configured():
+        raise OAuthError(f"{cfg.display_name} is not configured on this server (missing {cfg.client_id_env})")
+    params = {
+        "expiration": "never",
+        "name": app_name,
+        "scope": "read,write",
+        "response_type": "token",
+        "key": cfg.client_id(),
+        "return_url": redirect_uri,
+        "callback_method": "fragment",
+    }
     return f"{cfg.authorize_url}?{urlencode(params)}"
 
 
-async def _consume_state(user_id: str, connector_id: str, state: str) -> None:
+async def save_redirect_token(user_id: str, connector_id: str, token: str) -> Dict[str, Any]:
+    cfg = _connector_or_raise(connector_id)
+    if cfg.auth_type != "redirect_token":
+        raise OAuthError(f"{connector_id} is not a redirect_token connector")
+    if not token:
+        raise OAuthError("No token received — please try connecting again")
+    await mcp_connections_col.update_one(
+        {"user_id": user_id, "connector_id": connector_id},
+        {
+            "$set": {
+                "user_id": user_id, "connector_id": connector_id,
+                "credentials_enc": crypto_service.encrypt_json({"token": token}),
+                "updated_at": now_iso(),
+            },
+            "$setOnInsert": {"connected_at": now_iso()},
+        },
+        upsert=True,
+    )
+    return {"connected": True, "connector_id": connector_id}
+
+
+async def _consume_state(user_id: str, connector_id: str, state: str) -> dict:
     doc = await mcp_oauth_states_col.find_one_and_delete({"state": state})
     if not doc or doc.get("user_id") != user_id or doc.get("connector_id") != connector_id:
         raise OAuthError("Invalid or expired connect request — please try connecting again")
+    return doc
 
 
 async def exchange_code(user_id: str, connector_id: str, code: str, redirect_uri: str, state: str) -> Dict[str, Any]:
     cfg = _connector_or_raise(connector_id)
-    await _consume_state(user_id, connector_id, state)
+    state_doc = await _consume_state(user_id, connector_id, state)
+    _, token_url = _resolve_urls(cfg, state_doc.get("domain"))
 
     async with httpx.AsyncClient(timeout=15) as http:
         res = await http.post(
-            cfg.token_url,
+            token_url,
             data={
                 "code": code,
                 "client_id": cfg.client_id(),
@@ -116,6 +174,8 @@ async def exchange_code(user_id: str, connector_id: str, code: str, redirect_uri
         "scopes": cfg.scopes,
         "updated_at": now_iso(),
     }
+    if cfg.requires_domain:
+        update["domain"] = state_doc.get("domain")
     await mcp_connections_col.update_one(
         {"user_id": user_id, "connector_id": connector_id},
         {"$set": update, "$setOnInsert": {"connected_at": now_iso()}},
@@ -144,9 +204,10 @@ async def get_valid_access_token(user_id: str, connector_id: str) -> str:
     if not refresh_token:
         raise OAuthError(f"{cfg.display_name} connection expired — please reconnect")
 
+    _, token_url = _resolve_urls(cfg, conn.get("domain"))
     async with httpx.AsyncClient(timeout=15) as http:
         res = await http.post(
-            cfg.token_url,
+            token_url,
             data={
                 "refresh_token": refresh_token,
                 "client_id": cfg.client_id(),

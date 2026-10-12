@@ -185,6 +185,10 @@ secrets/
 # PIPER_VOICE_DIR) rather than vendored into the repo: several of the .onnx
 # files exceed GitHub's 100MB per-file limit, and none of them are source.
 models/piper/
+# Mock Interview — speaker-verification embedding model (ONNX export of
+# pyannote/embedding, MIT-licensed, ~18MB) — downloaded per-environment, same
+# reasoning as the Piper voices above.
+models/speaker_embedding/
 
 # Local dev Mongo data directory (created by `mongod --dbpath
 # .mongo_data_practice`) — binary database files, not source, and actively

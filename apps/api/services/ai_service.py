@@ -138,8 +138,9 @@ async def _connector_hint_block(user_id: str) -> str:
     return (
         "CONNECTABLE THIRD-PARTY SERVICES — this conversation currently has no active tool access. If the "
         "user asks for something one of these services would do (send a Slack message, check Gmail, create "
-        "a Jira ticket, etc.), tell them plainly to connect it from the Connectors page first — don't pretend "
-        "to do it, refuse vaguely, or ignore the request:\n" + catalog
+        "a Jira ticket, etc.), tell them plainly to connect it, and give them a markdown link to the "
+        "Connectors page exactly like this: [Connectors page](/connectors) — don't pretend to do it, refuse "
+        "vaguely, or ignore the request:\n" + catalog
     )
 
 

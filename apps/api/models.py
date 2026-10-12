@@ -306,14 +306,17 @@ class McpConnectorPublic(BaseModel):
     display_name: str
     description: str
     category: str
-    auth_type: str  # "oauth2" | "api_key" — tells the frontend which Connect UI to render
+    auth_type: str  # "oauth2" | "api_key" | "redirect_token" — tells the frontend which Connect UI to render
     mcp_status: str  # "ready" | "needs_server" — whether prompts can actually use this connector yet
     credential_fields: List[str] = Field(default_factory=list)  # api_key connectors only
+    requires_domain: bool = False  # oauth2 connectors with a per-store/per-tenant host (e.g. Shopify)
+    domain_label: str = "Domain"
+    domain_placeholder: str = ""
     scopes: List[str]
     connected: bool
     enabled: bool = True
     external_label: Optional[str] = None
-    configured: bool  # whether the server has this connector's OAuth app credentials set (oauth2 only)
+    configured: bool  # whether the server has this connector's app credentials set (oauth2/redirect_token only)
 
 
 class McpCallbackRequest(BaseModel):
@@ -324,6 +327,10 @@ class McpCallbackRequest(BaseModel):
 
 class McpToggleRequest(BaseModel):
     enabled: bool
+
+
+class McpRedirectTokenRequest(BaseModel):
+    token: str
 
 
 class McpApiKeyConnectRequest(BaseModel):
@@ -442,7 +449,7 @@ class InterviewLanguageChangeRequest(BaseModel):
 class InterviewViolationType(BaseModel):
     type: Literal[
         "face_not_visible", "multiple_faces", "tab_blur", "fullscreen_exit",
-        "copy_paste", "devtools_suspected", "app_backgrounded",
+        "copy_paste", "devtools_suspected", "app_backgrounded", "voice_mismatch",
     ]
     detected_at: Optional[str] = None  # client clock, informational only — never trusted for logic
 

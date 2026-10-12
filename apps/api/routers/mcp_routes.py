@@ -6,10 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import get_current_user
 from db import mcp_audit_log_col, mcp_connections_col
-from models import McpApiKeyConnectRequest, McpCallbackRequest, McpConnectorPublic, McpPromptRequest, McpToggleRequest, User
+from models import (
+    McpApiKeyConnectRequest, McpCallbackRequest, McpConnectorPublic, McpPromptRequest,
+    McpRedirectTokenRequest, McpToggleRequest, User,
+)
 from services.mcp import api_key_service, oauth_service
 from services.mcp.orchestrator_service import run_prompt
-from services.mcp.registry import list_connectors
+from services.mcp.registry import get_connector, list_connectors
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mcp", tags=["mcp"])
@@ -30,6 +33,9 @@ async def get_connectors(user: User = Depends(get_current_user)):
             auth_type=cfg.auth_type,
             mcp_status=cfg.mcp_status,
             credential_fields=cfg.credential_fields,
+            requires_domain=cfg.requires_domain,
+            domain_label=cfg.domain_label,
+            domain_placeholder=cfg.domain_placeholder,
             scopes=cfg.scopes,
             connected=cfg.id in connections,
             enabled=connections.get(cfg.id, {}).get("enabled", True),
@@ -41,9 +47,18 @@ async def get_connectors(user: User = Depends(get_current_user)):
 
 
 @router.get("/connect/{connector_id}")
-async def connect(connector_id: str, redirect_uri: str = Query(...), user: User = Depends(get_current_user)):
+async def connect(
+    connector_id: str, redirect_uri: str = Query(...), domain: str = Query(None),
+    user: User = Depends(get_current_user),
+):
+    cfg = get_connector(connector_id)
+    if not cfg:
+        raise HTTPException(404, "Unknown connector")
     try:
-        url = await oauth_service.build_authorize_url(user.id, connector_id, redirect_uri)
+        if cfg.auth_type == "redirect_token":
+            url = oauth_service.build_redirect_token_url(connector_id, redirect_uri)
+        else:
+            url = await oauth_service.build_authorize_url(user.id, connector_id, redirect_uri, domain=domain)
     except oauth_service.OAuthError as e:
         raise HTTPException(400, str(e))
     return {"authorize_url": url}
@@ -62,6 +77,14 @@ async def connect_with_api_key(connector_id: str, req: McpApiKeyConnectRequest, 
     try:
         return await api_key_service.save_connection(user.id, connector_id, req.values)
     except api_key_service.ApiKeyError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/connections/{connector_id}/redirect-token")
+async def connect_with_redirect_token(connector_id: str, req: McpRedirectTokenRequest, user: User = Depends(get_current_user)):
+    try:
+        return await oauth_service.save_redirect_token(user.id, connector_id, req.token)
+    except oauth_service.OAuthError as e:
         raise HTTPException(400, str(e))
 
 

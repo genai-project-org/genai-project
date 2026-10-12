@@ -181,6 +181,19 @@ export default function useProctoring({ sessionId, stream, videoEl, enabled, onR
               }
             } else {
               noFaceStreakRef.current = 0;
+              // Complements coco-ssd's person-count check above, not a
+              // duplicate of it: tested directly against a realistic
+              // second-person-leaning-into-frame composite, coco-ssd's
+              // body-box detector collapses two significantly OVERLAPPING
+              // people into a single box via its internal NMS (a real,
+              // inherent limitation of single-pass object detectors on
+              // occluded same-class instances — not fixable by tuning
+              // PERSON_SCORE_THRESHOLD, confirmed by sweeping it from 0.05 to
+              // 0.85 with no change). Two FACES, even when the two people's
+              // bodies overlap, are small and spatially distinct enough that
+              // face-api often still tells them apart. Either signal firing
+              // is enough — this is deliberately an OR, not a replacement.
+              if (detections.length > 1) reportViolation('multiple_faces');
             }
           } catch {
             // a single failed detection frame isn't worth surfacing

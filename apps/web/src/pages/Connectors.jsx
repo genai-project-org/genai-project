@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Loader2, MessageSquare, Plug, Search, Send } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -14,14 +15,16 @@ function fieldLabel(field) {
   return field.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function ConnectorCard({ c, connectingId, savingId, togglingId, apiKeyDrafts, setApiKeyDrafts, connect, disconnect, saveApiKey, toggleEnabled }) {
-  const draft = apiKeyDrafts[c.id] || {};
+function ConnectorCard({ c, connectingId, togglingId, connect, disconnect, toggleEnabled, openApiKeyDialog, openDomainDialog }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-2 text-base">
           {c.display_name}
           <div className="flex items-center gap-1.5">
+            {c.auth_type === 'api_key' && (
+              <Badge variant="outline" className="text-muted-foreground">Requires API key</Badge>
+            )}
             {c.mcp_status !== 'ready' && (
               <Badge variant="outline" className="text-muted-foreground">Actions coming soon</Badge>
             )}
@@ -42,32 +45,24 @@ function ConnectorCard({ c, connectingId, savingId, togglingId, apiKeyDrafts, se
         {c.connected && !c.enabled && (
           <div className="text-xs text-muted-foreground">Disabled — Claude won't use this until you turn it back on.</div>
         )}
-        {c.auth_type === 'oauth2' && !c.configured && (
-          <div className="text-xs text-amber-600 dark:text-amber-400">Not configured on this server yet (missing OAuth app credentials)</div>
-        )}
         {c.auth_type === 'api_key' && !c.connected && (
-          <div className="space-y-2">
-            {c.credential_fields.map((field) => (
-              <Input
-                key={field}
-                type="password"
-                placeholder={fieldLabel(field)}
-                value={draft[field] || ''}
-                onChange={(e) => setApiKeyDrafts((prev) => ({ ...prev, [c.id]: { ...prev[c.id], [field]: e.target.value } }))}
-              />
-            ))}
-          </div>
+          <div className="text-xs text-muted-foreground">{c.display_name} doesn't offer a login/approve flow for this — a key from their dashboard is the only option.</div>
+        )}
+        {(c.auth_type === 'oauth2' || c.auth_type === 'redirect_token') && !c.configured && (
+          <div className="text-xs text-amber-600 dark:text-amber-400">Not configured on this server yet (missing OAuth app credentials)</div>
         )}
       </CardContent>
       <CardFooter>
         {c.connected ? (
           <Button variant="outline" size="sm" onClick={() => disconnect(c.id)}>Disconnect</Button>
         ) : c.auth_type === 'api_key' ? (
-          <Button size="sm" disabled={savingId === c.id} onClick={() => saveApiKey(c)}>
-            {savingId === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save & Connect'}
+          <Button size="sm" onClick={() => openApiKeyDialog(c)}>Connect</Button>
+        ) : c.requires_domain ? (
+          <Button size="sm" disabled={!c.configured || connectingId === c.id} onClick={() => openDomainDialog(c)}>
+            {connectingId === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Connect'}
           </Button>
         ) : (
-          <Button size="sm" disabled={!c.configured || connectingId === c.id} onClick={() => connect(c.id)}>
+          <Button size="sm" disabled={!c.configured || connectingId === c.id} onClick={() => connect(c)}>
             {connectingId === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Connect'}
           </Button>
         )}
@@ -80,12 +75,22 @@ export default function Connectors() {
   const [loading, setLoading] = useState(true);
   const [connectors, setConnectors] = useState([]);
   const [connectingId, setConnectingId] = useState(null);
-  const [savingId, setSavingId] = useState(null);
   const [togglingId, setTogglingId] = useState(null);
-  const [apiKeyDrafts, setApiKeyDrafts] = useState({});
   const [search, setSearch] = useState('');
   const popupRef = useRef(null);
   const popupPollRef = useRef(null);
+
+  // The api_key "Connect" button opens this dialog instead of showing raw
+  // input boxes on the card itself — keeps every card's resting state down
+  // to just a Connect/Disconnect button + toggle, same as the OAuth ones.
+  const [apiKeyDialogConnector, setApiKeyDialogConnector] = useState(null);
+  const [apiKeyDraft, setApiKeyDraft] = useState({});
+  const [savingApiKey, setSavingApiKey] = useState(false);
+
+  // Shopify-style connectors: ask for the store domain (not a secret — just
+  // which host to send the user to) before opening the OAuth popup.
+  const [domainDialogConnector, setDomainDialogConnector] = useState(null);
+  const [domainDraft, setDomainDraft] = useState('');
 
   const [prompt, setPrompt] = useState('');
   const [running, setRunning] = useState(false);
@@ -107,16 +112,31 @@ export default function Connectors() {
     loadConnectors();
   }, []);
 
-  // Popup OAuth: the popup (ConnectorOAuthCallback.jsx) posts {source:'mcp-oauth', code, state, error}
-  // back to this window instead of navigating anywhere, so the main app never leaves /connectors.
+  // Popup OAuth: the popup (ConnectorOAuthCallback.jsx) posts the result back
+  // to this window instead of navigating anywhere, so the main app never
+  // leaves /connectors. Two message shapes: standard OAuth2 code/state
+  // exchange, or a Trello-style redirect_token that's already final.
   useEffect(() => {
     const onMessage = async (event) => {
       if (event.origin !== window.location.origin) return;
       const data = event.data;
-      if (!data || data.source !== 'mcp-oauth') return;
+      if (!data || (data.source !== 'mcp-oauth' && data.source !== 'mcp-oauth-token')) return;
 
       if (popupPollRef.current) { clearInterval(popupPollRef.current); popupPollRef.current = null; }
       popupRef.current = null;
+
+      if (data.source === 'mcp-oauth-token') {
+        try {
+          await api.post(`/mcp/connections/${data.connectorId}/redirect-token`, { token: data.token });
+          toast.success('Connected');
+        } catch (e) {
+          toast.error(e.response?.data?.detail || 'Connection failed');
+        } finally {
+          setConnectingId(null);
+          loadConnectors();
+        }
+        return;
+      }
 
       if (data.error) {
         toast.error(`Connection failed: ${data.error}`);
@@ -142,26 +162,36 @@ export default function Connectors() {
     };
   }, []);
 
-  const connect = async (connectorId) => {
+  const openPopupAndWait = (connectorId, authorizeUrl) => {
+    const popup = window.open(authorizeUrl, 'mcp-oauth', 'width=520,height=700');
+    if (!popup) {
+      toast.error('Pop-up blocked — please allow pop-ups for this site and try again.');
+      setConnectingId(null);
+      return;
+    }
+    popupRef.current = popup;
+    // If the user closes the popup manually without finishing, don't leave the spinner stuck.
+    popupPollRef.current = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(popupPollRef.current);
+        popupPollRef.current = null;
+        setConnectingId((cur) => (cur === connectorId ? null : cur));
+      }
+    }, 500);
+  };
+
+  const connect = async (connector, domain) => {
+    const connectorId = connector.id;
     setConnectingId(connectorId);
     try {
-      const redirect_uri = `${window.location.origin}/connectors/oauth-callback`;
-      const { data } = await api.get(`/mcp/connect/${connectorId}`, { params: { redirect_uri } });
-      const popup = window.open(data.authorize_url, 'mcp-oauth', 'width=520,height=700');
-      if (!popup) {
-        toast.error('Pop-up blocked — please allow pop-ups for this site and try again.');
-        setConnectingId(null);
-        return;
-      }
-      popupRef.current = popup;
-      // If the user closes the popup manually without finishing, don't leave the spinner stuck.
-      popupPollRef.current = setInterval(() => {
-        if (popup.closed) {
-          clearInterval(popupPollRef.current);
-          popupPollRef.current = null;
-          setConnectingId((cur) => (cur === connectorId ? null : cur));
-        }
-      }, 500);
+      // Trello-style connectors have no registered redirect URI to match
+      // exactly, so it's safe (and necessary) to tag which connector this
+      // callback is for — standard OAuth2 providers require redirect_uri to
+      // match their registered value exactly, so that tag is omitted there.
+      const base = `${window.location.origin}/connectors/oauth-callback`;
+      const redirect_uri = connector.auth_type === 'redirect_token' ? `${base}?connector=${connectorId}` : base;
+      const { data } = await api.get(`/mcp/connect/${connectorId}`, { params: { redirect_uri, domain } });
+      openPopupAndWait(connectorId, data.authorize_url);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to start connection');
       setConnectingId(null);
@@ -191,18 +221,36 @@ export default function Connectors() {
     }
   };
 
-  const saveApiKey = async (connector) => {
-    const values = apiKeyDrafts[connector.id] || {};
-    setSavingId(connector.id);
+  const openApiKeyDialog = (connector) => {
+    setApiKeyDraft({});
+    setApiKeyDialogConnector(connector);
+  };
+
+  const openDomainDialog = (connector) => {
+    setDomainDraft('');
+    setDomainDialogConnector(connector);
+  };
+
+  const submitDomainDialog = () => {
+    if (!domainDraft.trim() || !domainDialogConnector) return;
+    const connector = domainDialogConnector;
+    const domain = domainDraft.trim();
+    setDomainDialogConnector(null);
+    connect(connector, domain);
+  };
+
+  const submitApiKeyDialog = async () => {
+    if (!apiKeyDialogConnector) return;
+    setSavingApiKey(true);
     try {
-      await api.post(`/mcp/connections/${connector.id}/api-key`, { values });
+      await api.post(`/mcp/connections/${apiKeyDialogConnector.id}/api-key`, { values: apiKeyDraft });
       toast.success('Connected');
-      setApiKeyDrafts((prev) => ({ ...prev, [connector.id]: {} }));
+      setApiKeyDialogConnector(null);
       loadConnectors();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to connect');
     } finally {
-      setSavingId(null);
+      setSavingApiKey(false);
     }
   };
 
@@ -269,14 +317,12 @@ export default function Connectors() {
                   key={c.id}
                   c={c}
                   connectingId={connectingId}
-                  savingId={savingId}
                   togglingId={togglingId}
-                  apiKeyDrafts={apiKeyDrafts}
-                  setApiKeyDrafts={setApiKeyDrafts}
                   connect={connect}
                   disconnect={disconnect}
-                  saveApiKey={saveApiKey}
                   toggleEnabled={toggleEnabled}
+                  openApiKeyDialog={openApiKeyDialog}
+                  openDomainDialog={openDomainDialog}
                 />
               ))}
             </div>
@@ -319,6 +365,61 @@ export default function Connectors() {
           </Card>
         )}
       </div>
+
+      <Dialog open={!!apiKeyDialogConnector} onOpenChange={(open) => !open && setApiKeyDialogConnector(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Connect {apiKeyDialogConnector?.display_name}</DialogTitle>
+            <DialogDescription>
+              Paste the value{apiKeyDialogConnector?.credential_fields?.length > 1 ? 's' : ''} you got from{' '}
+              {apiKeyDialogConnector?.display_name}'s own dashboard. This is stored encrypted and only used on your behalf.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {apiKeyDialogConnector?.credential_fields.map((field) => (
+              <div key={field} className="space-y-1.5">
+                <label className="text-sm font-medium">{fieldLabel(field)}</label>
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={apiKeyDraft[field] || ''}
+                  onChange={(e) => setApiKeyDraft((prev) => ({ ...prev, [field]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button onClick={submitApiKeyDialog} disabled={savingApiKey}>
+              {savingApiKey ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Connect
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!domainDialogConnector} onOpenChange={(open) => !open && setDomainDialogConnector(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Connect {domainDialogConnector?.display_name}</DialogTitle>
+            <DialogDescription>
+              {domainDialogConnector?.display_name} has its own OAuth login per account — enter your{' '}
+              {domainDialogConnector?.domain_label?.toLowerCase()} and we'll take you straight to their login screen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">{domainDialogConnector?.domain_label}</label>
+            <Input
+              placeholder={domainDialogConnector?.domain_placeholder}
+              value={domainDraft}
+              onChange={(e) => setDomainDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submitDomainDialog()}
+            />
+          </div>
+          <DialogFooter>
+            <Button onClick={submitDomainDialog} disabled={!domainDraft.trim()}>Continue</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

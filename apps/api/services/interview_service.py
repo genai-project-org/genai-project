@@ -357,6 +357,7 @@ async def create_session(
         "behavioral_ends_at": None,
         "warning_count": 0,
         "paused_at": None,
+        "voice_reference_embedding": None,
         "terminated_reason": None,
         "grant_id": grant_id,
         "entitlement_tx_id": entitlement_tx_id,
@@ -634,6 +635,46 @@ def _turns_to_messages(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return messages
 
 
+async def _check_voice_match(session: Dict[str, Any], audio_bytes: bytes) -> None:
+    """Flags a DIFFERENT person answering mid-interview — see
+    speech_service.get_voice_embedding's docstring for why this uses a real
+    trained speaker-embedding model rather than a hand-rolled acoustic
+    fingerprint (the latter was prototyped and empirically rejected: it
+    couldn't reliably tell two different speakers apart from one speaker's
+    own natural variation).
+
+    The candidate's FIRST voice answer in the session enrolls a reference
+    embedding (persisted on the session doc); every later voice answer is
+    compared against THAT SAME reference for the rest of the session — not
+    re-enrolled each time, so an impostor who answers more than once gets
+    flagged every time, not just once. A too-short/unembeddable clip (see
+    SPEAKER_MIN_AUDIO_SECONDS) is skipped entirely, never treated as a
+    mismatch — "can't tell" and "doesn't match" are not the same thing."""
+    embedding = await speech_service.get_voice_embedding(audio_bytes)
+    if embedding is None:
+        return
+
+    session_id = session["_id"]
+    reference = session.get("voice_reference_embedding")
+    if reference is None:
+        await interview_sessions_col.update_one(
+            {"_id": session_id, "voice_reference_embedding": None},
+            {"$set": {"voice_reference_embedding": embedding}},
+        )
+        return
+
+    similarity = speech_service.cosine_similarity(embedding, reference)
+    if similarity < speech_service.SPEAKER_MATCH_THRESHOLD:
+        from services import proctoring_service  # local import — avoids a circular import with interview_service
+        try:
+            await proctoring_service.record_violation(
+                session_id, session["user_id"], "voice_mismatch",
+                evidence_bytes=audio_bytes, evidence_content_type="audio/webm",
+            )
+        except Exception:
+            logger.exception(f"interview_service: failed to record voice_mismatch violation for session {session_id}")
+
+
 async def handle_turn(
     session_id: str, user_id: str, *,
     modality: str, text: str = "", audio_bytes: Optional[bytes] = None,
@@ -662,6 +703,9 @@ async def handle_turn(
             raise HTTPException(503, str(e))
     if not candidate_text.strip():
         raise HTTPException(400, "No speech detected / empty answer — please try again.")
+
+    if modality == "voice" and audio_bytes:
+        await _check_voice_match(session, audio_bytes)
 
     round_name = session["current_round"]
     prior_turns = [t async for t in interview_turns_col.find({"session_id": session["_id"]}).sort("turn_index", 1)]
@@ -824,6 +868,11 @@ async def end_session_early(session_id: str, user_id: str) -> Dict[str, Any]:
     if updated:
         await refund_session(user_id, session.get("grant_id"), session.get("entitlement_tx_id"),
                             "Refund: abandoned before any content")
+        # Without this, the report page polls forever on "pending" for a
+        # session that will never produce one — generate_report() itself
+        # guards on zero candidate turns and records a proper "no_data"
+        # report (reason: abandoned_by_candidate) instead of a scored one.
+        _kick_off_report(session_id)
         return {"session_status": "abandoned"}
 
     # Lost the race to a concurrent call — report whatever it actually left
@@ -850,6 +899,7 @@ async def sweep_stale_sessions() -> None:
             {"$set": {"status": "abandoned", "ended_at": now_iso(), "updated_at": now_iso()}},
         )
         await refund_session(s["user_id"], s.get("grant_id"), s.get("entitlement_tx_id"), "Refund: session never started")
+        _kick_off_report(s["_id"])  # no_data report (reason: abandoned_by_candidate) — see end_session_early's comment
 
     expire_cutoff = (now - timedelta(hours=HARD_EXPIRE_HOURS)).isoformat()
     async for s in interview_sessions_col.find({"status": {"$in": list(ACTIVE_STATUSES)}, "created_at": {"$lt": expire_cutoff}}):
@@ -859,3 +909,4 @@ async def sweep_stale_sessions() -> None:
                       "terminated_reason": "stuck_session_hard_expire"}},
         )
         logger.warning(f"interview_service: hard-expired stuck session {s['_id']}")
+        _kick_off_report(s["_id"])  # covers both a genuinely-empty stuck session (no_data) and one with real turns (scored)

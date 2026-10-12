@@ -10,12 +10,13 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 import {
-  Mic, Square, Send, Keyboard, LogOut, Loader2, AlertTriangle, ShieldOff, PartyPopper,
+  Mic, Square, Send, Keyboard, LogOut, Loader2, AlertTriangle, ShieldOff, PartyPopper, Settings,
 } from 'lucide-react';
 import AvatarStage from './AvatarStage';
 import useProctoring from './useProctoring';
@@ -68,6 +69,11 @@ export default function InterviewSession() {
   const [stream, setStream] = useState(null);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const [micDevices, setMicDevices] = useState([]);
+  const [camDevices, setCamDevices] = useState([]);
+  const [selectedMicId, setSelectedMicId] = useState('');
+  const [selectedCamId, setSelectedCamId] = useState('');
+  const [switchingDevice, setSwitchingDevice] = useState(false);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const audioElRef = useRef(null);
@@ -122,7 +128,26 @@ export default function InterviewSession() {
       } catch { /* purely cosmetic — ignore */ }
 
       try {
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Use the EXACT camera/mic verified in system check, not just
+        // whatever the browser/OS currently calls "default" — see
+        // InterviewSetup.jsx's navigate() comment for why this matters: a
+        // candidate who had to switch away from a broken default mic during
+        // system check would otherwise silently land right back on it here.
+        const micDeviceId = location.state?.micDeviceId;
+        const camDeviceId = location.state?.camDeviceId;
+        let mediaStream;
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: camDeviceId ? { deviceId: { exact: camDeviceId } } : true,
+            audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true,
+          });
+        } catch (deviceErr) {
+          // The specific device picked in setup may no longer exist (unplugged,
+          // permissions changed) — degrade to the browser's current default
+          // rather than failing the whole interview over a stale device id.
+          console.warn('Preferred camera/mic unavailable, falling back to default:', deviceErr);
+          mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        }
         if (cancelled) { mediaStream.getTracks().forEach((t) => t.stop()); return; }
         streamRef.current = mediaStream;
         setStream(mediaStream);
@@ -134,6 +159,10 @@ export default function InterviewSession() {
         // later, leaving the self-camera preview permanently blank. The
         // effect below (watching `stream`) re-attaches it once the <video>
         // element actually exists.
+        setSelectedMicId(mediaStream.getAudioTracks()[0]?.getSettings().deviceId || '');
+        setSelectedCamId(mediaStream.getVideoTracks()[0]?.getSettings().deviceId || '');
+        refreshDeviceList();
+        navigator.mediaDevices.addEventListener?.('devicechange', refreshDeviceList);
       } catch (e) {
         toast.error('Camera/microphone access is required for a proctored interview.');
       }
@@ -146,6 +175,7 @@ export default function InterviewSession() {
 
     return () => {
       cancelled = true;
+      navigator.mediaDevices.removeEventListener?.('devicechange', refreshDeviceList);
       stopEverything();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -157,6 +187,47 @@ export default function InterviewSession() {
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; setStream(null); }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try { mediaRecorderRef.current.stop(); } catch { /* noop */ }
+    }
+  };
+
+  const refreshDeviceList = async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setMicDevices(devices.filter((d) => d.kind === 'audioinput'));
+      setCamDevices(devices.filter((d) => d.kind === 'videoinput'));
+    } catch { /* best-effort — device labels just won't populate */ }
+  };
+
+  // Mid-interview device switch — same "build a new MediaStream, swap one
+  // track" pattern as InterviewSetup.jsx's system-check picker. Calling
+  // setStream(...) with a genuinely new object (not mutating the existing
+  // one) matters here specifically because useProctoring's rolling
+  // evidence-clip recorder and the PIP-attachment effect above are both
+  // keyed on `stream` by reference — an in-place track swap wouldn't
+  // re-trigger either of them, leaving evidence clips recording a dead
+  // (stopped) track after a switch. startRecording() below always reads
+  // streamRef.current.getAudioTracks() fresh at click time, so no other
+  // wiring is needed for push-to-talk to pick up the new mic.
+  const switchDevice = async (kind, deviceId) => {
+    if (!streamRef.current || !deviceId || stoppedAllRef.current) return;
+    setSwitchingDevice(true);
+    try {
+      const constraints = kind === 'audio' ? { audio: { deviceId: { exact: deviceId } } } : { video: { deviceId: { exact: deviceId } } };
+      const tempStream = await navigator.mediaDevices.getUserMedia(constraints);
+      const newTrack = kind === 'audio' ? tempStream.getAudioTracks()[0] : tempStream.getVideoTracks()[0];
+      const keepTracks = kind === 'audio' ? streamRef.current.getVideoTracks() : streamRef.current.getAudioTracks();
+      const oldTracks = kind === 'audio' ? streamRef.current.getAudioTracks() : streamRef.current.getVideoTracks();
+      oldTracks.forEach((t) => t.stop());
+
+      const newStream = new MediaStream([...keepTracks, newTrack]);
+      streamRef.current = newStream;
+      setStream(newStream);
+      if (kind === 'audio') setSelectedMicId(deviceId); else setSelectedCamId(deviceId);
+      toast.success(`Switched ${kind === 'audio' ? 'microphone' : 'camera'}.`);
+    } catch (e) {
+      toast.error(`Could not switch ${kind === 'audio' ? 'microphone' : 'camera'} — ${e?.message || 'try again'}.`);
+    } finally {
+      setSwitchingDevice(false);
     }
   };
 
@@ -600,7 +671,51 @@ export default function InterviewSession() {
               </div>
             )}
             <div className="flex items-center justify-center gap-3">
-              <video ref={videoRef} autoPlay muted playsInline className="w-24 h-16 rounded-md object-cover -scale-x-100 border border-border bg-black" data-testid="interview-self-pip" />
+              <div className="relative">
+                <video ref={videoRef} autoPlay muted playsInline className="w-24 h-16 rounded-md object-cover -scale-x-100 border border-border bg-black" data-testid="interview-self-pip" />
+                {(micDevices.length > 1 || camDevices.length > 1) && (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-background border border-border flex items-center justify-center text-muted-foreground hover:text-foreground"
+                        aria-label="Switch camera or microphone"
+                        data-testid="interview-device-settings-btn"
+                      >
+                        <Settings className="h-3 w-3" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-64 space-y-3">
+                      {micDevices.length > 1 && (
+                        <div>
+                          <div className="text-xs text-muted-foreground mb-1.5">Microphone</div>
+                          <Select value={selectedMicId} onValueChange={(v) => switchDevice('audio', v)} disabled={switchingDevice}>
+                            <SelectTrigger className="h-8 text-xs" data-testid="interview-session-mic-select"><SelectValue placeholder="Choose a microphone" /></SelectTrigger>
+                            <SelectContent>
+                              {micDevices.map((d, i) => (
+                                <SelectItem key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                      {camDevices.length > 1 && (
+                        <div>
+                          <div className="text-xs text-muted-foreground mb-1.5">Camera</div>
+                          <Select value={selectedCamId} onValueChange={(v) => switchDevice('video', v)} disabled={switchingDevice}>
+                            <SelectTrigger className="h-8 text-xs" data-testid="interview-session-camera-select"><SelectValue placeholder="Choose a camera" /></SelectTrigger>
+                            <SelectContent>
+                              {camDevices.map((d, i) => (
+                                <SelectItem key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </PopoverContent>
+                  </Popover>
+                )}
+              </div>
               <Button
                 size="lg"
                 variant={recording ? 'destructive' : 'default'}

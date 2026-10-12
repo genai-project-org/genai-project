@@ -65,6 +65,20 @@ async def test_real_interaction_produces_a_normal_scored_report(monkeypatch):
         "session_id": "sess-1", "round": "technical", "question_index": 0,
         "dimension": "technical_correctness", "score": 80, "note": "good", "created_at": "2026-01-01T00:00:00+00:00",
     })
+    # A SECOND distinct scored question — interview_report_service requires at
+    # least MIN_SCORED_QUESTIONS_FOR_REPORT before producing a numeric overall
+    # score at all (see test_single_scored_question_is_insufficient_data_not_a_score
+    # below for the one-question case this test used to — incorrectly —
+    # represent as "a normal interview").
+    await interview_turns_col.insert_one({
+        "session_id": "sess-1", "round": "technical", "turn_index": 1,
+        "speaker": "candidate", "modality": "text", "text": "The time complexity is O(n).",
+        "tool_calls": [], "created_at": "2026-01-01T00:00:01+00:00",
+    })
+    await interview_score_events_col.insert_one({
+        "session_id": "sess-1", "round": "technical", "question_index": 1,
+        "dimension": "problem_solving", "score": 75, "note": "good complexity analysis", "created_at": "2026-01-01T00:00:01+00:00",
+    })
 
     async def _fake_send_message(self, msg):
         import json
@@ -85,3 +99,41 @@ async def test_real_interaction_produces_a_normal_scored_report(monkeypatch):
     profile = await career_profile_col.find_one({"user_id": "user-1"})
     assert profile is not None
     assert "Mock Interview" in profile["profile_text"]
+
+
+async def test_single_scored_question_is_insufficient_data_not_a_score():
+    """The exact real-world bug report this guards against: a candidate who
+    gave only their introduction (one candidate turn, one record_score call —
+    scoring communication on the intro alone) before the session ended
+    previously still got a full numeric report (51.7/100 in the field),
+    because every OTHER dimension silently defaulted to a fabricated 50.0 and
+    blended into a normal-looking weighted average. One scored question is not
+    enough interview to trust an overall score at all — this must land in the
+    same "insufficient data" bucket as zero turns, not a diluted-but-plausible
+    number, and the one real data point must still be shown honestly rather
+    than discarded."""
+    await _make_session()
+    await interview_turns_col.insert_one({
+        "session_id": "sess-1", "round": "technical", "turn_index": 0,
+        "speaker": "candidate", "modality": "voice", "text": "Hi, I'm a backend developer.",
+        "tool_calls": [], "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    await interview_score_events_col.insert_one({
+        "session_id": "sess-1", "round": "technical", "question_index": 0,
+        "dimension": "communication", "score": 78, "note": "Clear intro.", "created_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    await interview_report_service.generate_report("sess-1")
+    report = await interview_reports_col.find_one({"session_id": "sess-1"})
+
+    assert report["status"] == "no_data"
+    assert report["no_data_reason"] == "insufficient_engagement"
+    assert report["overall_score"] is None
+    # The one real data point is preserved and shown honestly, not discarded
+    # and not blended into a fake overall average.
+    assert report["dimension_scores"] == {"communication": 78.0}
+
+    # No Career Intelligence write-back for an interview that was never
+    # genuinely completed enough to summarize.
+    profile = await career_profile_col.find_one({"user_id": "user-1"})
+    assert profile is None

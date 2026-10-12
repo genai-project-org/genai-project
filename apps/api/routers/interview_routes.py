@@ -133,6 +133,15 @@ async def report_violation(
     )
 
 
+@router.get("/sessions/{session_id}/violations/{violation_id}/evidence-url")
+async def get_violation_evidence_url(session_id: str, violation_id: str, user: User = Depends(get_current_user)):
+    """A short-lived signed URL for one violation's evidence clip, resolved
+    on demand rather than embedded in the report payload — see
+    proctoring_service.get_evidence_url."""
+    url = await proctoring_service.get_evidence_url(session_id, user.id, violation_id)
+    return {"url": url}
+
+
 @router.get("/sessions/{session_id}/report")
 async def get_report(session_id: str, user: User = Depends(get_current_user)):
     report = await interview_report_service.get_report(session_id, user.id)

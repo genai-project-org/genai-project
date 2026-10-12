@@ -31,7 +31,7 @@ TERMINATE_AT_COUNT = WARNINGS_BEFORE_TERMINATION + 1
 # can't be stored and counted toward termination.
 VALID_VIOLATION_TYPES = {
     "face_not_visible", "multiple_faces", "tab_blur", "fullscreen_exit",
-    "copy_paste", "devtools_suspected", "app_backgrounded",
+    "copy_paste", "devtools_suspected", "app_backgrounded", "voice_mismatch",
 }
 
 
@@ -115,3 +115,29 @@ async def record_violation(
         "warnings_remaining": max(0, TERMINATE_AT_COUNT - warning_count),
         "terminated": terminated,
     }
+
+
+async def get_evidence_url(session_id: str, user_id: str, violation_id: str) -> str:
+    """Resolves one violation's evidence clip to a short-lived signed S3 URL,
+    on demand — never exposed as a durable key on the report payload itself
+    (see interview_report_service._violations_public). Raises 404 if the
+    violation doesn't belong to this user's session, or if no clip was ever
+    captured for it (e.g. the upload failed, or storage isn't configured in
+    this environment — see storage_service.is_configured())."""
+    from bson import ObjectId
+    from fastapi import HTTPException
+
+    try:
+        oid = ObjectId(violation_id)
+    except Exception:
+        raise HTTPException(404, "Violation not found")
+
+    violation = await interview_violations_col.find_one(
+        {"_id": oid, "session_id": session_id, "user_id": user_id},
+    )
+    if not violation:
+        raise HTTPException(404, "Violation not found")
+    if not violation.get("evidence_clip_key"):
+        raise HTTPException(404, "No evidence clip was captured for this violation")
+
+    return storage_service.get_signed_url(violation["evidence_clip_key"])

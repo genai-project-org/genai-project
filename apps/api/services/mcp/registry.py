@@ -48,8 +48,16 @@ class ConnectorConfig:
     # ---- oauth2 fields ----
     # OAuth endpoints + credentials (the actual secret values live in env
     # vars, never hardcoded — see client_id_env/client_secret_env).
+    # authorize_url/token_url may contain a "{domain}" placeholder when
+    # requires_domain is set (e.g. Shopify, where every store has its own
+    # OAuth host) — the user supplies that one non-secret value (their store
+    # domain, not a credential) right before the popup opens; see
+    # oauth_service.build_authorize_url's `domain` parameter.
     authorize_url: Optional[str] = None
     token_url: Optional[str] = None
+    requires_domain: bool = False
+    domain_label: str = "Domain"  # frontend prompt label when requires_domain is set
+    domain_placeholder: str = ""
     client_id_env: Optional[str] = None
     client_secret_env: Optional[str] = None
     extra_authorize_params: Dict[str, str] = field(default_factory=dict)
@@ -57,7 +65,16 @@ class ConnectorConfig:
     # env var name (never as a CLI argument — that would leak into `ps`).
     token_env_var: Optional[str] = None
 
-    # ---- api_key fields ----
+    # ---- api_key / redirect_token fields ----
+    # api_key: the user pastes these values directly (no OAuth exists at the
+    # provider at all).
+    # redirect_token: a Trello-style flow — not standard OAuth2 (no client
+    # secret, no server-side code exchange), but the per-user value still
+    # arrives via a provider consent redirect the user approves in a popup,
+    # never typed/copied by hand. `client_id_env` holds the operator's public
+    # app key (not secret — safe to appear in the authorize URL);
+    # credential_fields/credential_env_map describe the per-user value that
+    # comes back in the redirect.
     credential_fields: List[str] = field(default_factory=list)
     credential_env_map: Dict[str, str] = field(default_factory=dict)
 
@@ -97,12 +114,15 @@ class ConnectorConfig:
     def is_configured(self) -> bool:
         """Whether this server is ready to offer the connector at all.
 
-        oauth2: the server-wide app credentials must be set. api_key: always
-        true — there's nothing to configure server-side, each user supplies
-        their own key(s) directly.
+        oauth2: the server-wide client_id/secret must be set. redirect_token:
+        only the public app key (client_id_env) needs to be set — there's no
+        secret. api_key: always true — there's nothing to configure
+        server-side, each user supplies their own key(s) directly.
         """
         if self.auth_type == "api_key":
             return True
+        if self.auth_type == "redirect_token":
+            return bool(self.client_id())
         return bool(self.client_id() and self.client_secret())
 
 
@@ -371,12 +391,19 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "trello": ConnectorConfig(
         id="trello", display_name="Trello", category="Project Management",
         description="Read and manage your Trello boards, lists, and cards.",
-        auth_type="api_key", credential_fields=["api_key", "token"],
-        credential_env_map={"api_key": "TRELLO_API_KEY", "token": "TRELLO_TOKEN"},
+        # Not standard OAuth2 (no client secret, no server-side code exchange),
+        # but still a pure click-Connect-and-approve flow from the user's
+        # perspective: Trello redirects a popup back with the per-user token
+        # already in the URL fragment — see services/mcp/oauth_service.py's
+        # build_redirect_token_url(). client_id_env holds the operator's
+        # public Trello API key (safe to appear in the authorize URL).
+        auth_type="redirect_token",
+        authorize_url="https://trello.com/1/authorize",
+        client_id_env="TRELLO_API_KEY",
+        credential_fields=["token"], credential_env_map={"token": "TRELLO_TOKEN"},
         mcp_status="needs_server",
-        mcp_notes=("Trello has no real OAuth2 token endpoint — it's an API-key + a per-user token obtained via a "
-                   "simplified redirect+fragment flow (see CONNECTOR_SETUP.md). Community npm packages exist "
-                   "(e.g. trello-mcp-server) but maintenance is unverified."),
+        mcp_notes=("Community npm packages exist (e.g. trello-mcp-server) but maintenance is unverified — build a "
+                   "thin stdio wrapper over the REST API using TRELLO_API_KEY + the per-user TRELLO_TOKEN."),
     ),
     "clickup": ConnectorConfig(
         id="clickup", display_name="ClickUp", category="Project Management",
@@ -459,24 +486,38 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     ),
     "azure": ConnectorConfig(
         id="azure", display_name="Microsoft Azure", category="Developer Tools",
-        description="Call Azure APIs using a service principal from your own tenant.",
-        auth_type="api_key", credential_fields=["tenant_id", "client_id", "client_secret", "subscription_id"],
-        credential_env_map={"tenant_id": "AZURE_TENANT_ID", "client_id": "AZURE_CLIENT_ID", "client_secret": "AZURE_CLIENT_SECRET", "subscription_id": "AZURE_SUBSCRIPTION_ID"},
-        transport="stdio", stdio_command="npx", stdio_args=["-y", "@azure/mcp@latest"],
+        description="Call Azure Resource Manager APIs on resources you have permission to manage.",
+        # Delegated (user) access to Azure Resource Manager — NOT a service principal/client
+        # secret. The user just logs in with their own Microsoft account and approves; they
+        # can only ever act on resources that account already has permission on. Reuses the
+        # same Entra app registration as microsoft_teams/microsoft_outlook_mail/onedrive —
+        # the operator just needs to add the "Azure Service Management" API permission to it
+        # once, in addition to whatever Graph permissions it already has.
+        scopes=["https://management.azure.com/user_impersonation", "offline_access"],
+        authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        client_id_env="MS_GRAPH_CLIENT_ID", client_secret_env="MS_GRAPH_CLIENT_SECRET",
         mcp_status="needs_server",
-        mcp_notes=("Official Microsoft-published server reads the standard Azure Identity env vars used here, which "
-                   "is promising, but this exact invocation hasn't been run/verified end-to-end yet. Scope the "
-                   "service principal's role assignment as narrowly as possible (never Owner/Contributor at subscription scope)."),
+        mcp_notes=("Official npm `@azure/mcp` reads the resulting delegated token the standard Azure Identity way "
+                   "— needs a small stdio wrapper to inject it (the official package defaults to interactive "
+                   "`az login`/service-principal env vars, not a pre-obtained delegated token; confirm its "
+                   "token-injection option before wiring this up as a session-scoped subprocess)."),
     ),
     "gcp": ConnectorConfig(
         id="gcp", display_name="Google Cloud Platform", category="Developer Tools",
-        description="Call GCP APIs (Cloud SQL, BigQuery, Storage, etc.) using a service account from your own project.",
-        auth_type="api_key", credential_fields=["project_id", "service_account_json"],
-        credential_env_map={"project_id": "GCP_PROJECT_ID", "service_account_json": "GOOGLE_APPLICATION_CREDENTIALS_JSON"},
+        description="Call GCP APIs (Cloud SQL, BigQuery, Storage, etc.) on your own projects.",
+        # Same Google OAuth app as Calendar/Gmail/Docs/Drive — just the broader cloud-platform
+        # scope, which lets the user grant delegated access to their own GCP projects via the
+        # normal Google consent screen. No service account JSON key needed from the user.
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        authorize_url="https://accounts.google.com/o/oauth2/v2/auth", token_url="https://oauth2.googleapis.com/token",
+        client_id_env="GOOGLE_CLIENT_ID", client_secret_env="GOOGLE_CLIENT_SECRET",
+        extra_authorize_params={"access_type": "offline", "prompt": "consent"},
         mcp_status="needs_server",
         mcp_notes=("Google's official MCP Toolbox for Databases (googleapis/genai-toolbox) covers Cloud SQL/Spanner/"
-                   "BigQuery/Firestore specifically, not general GCP infra — no single official broad-infra MCP server "
-                   "was found. Use a narrowly-scoped predefined IAM role, never Owner/Editor at project level."),
+                   "BigQuery/Firestore specifically, not general GCP infra — no single official broad-infra MCP "
+                   "server was found yet. cloud-platform is a broad/sensitive scope — Google's standard OAuth "
+                   "verification review applies past 100 users, same as the other Google connectors here."),
     ),
     "circleci": ConnectorConfig(
         id="circleci", display_name="CircleCI", category="Developer Tools",
@@ -579,11 +620,17 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "stripe": ConnectorConfig(
         id="stripe", display_name="Stripe", category="Commerce & Finance",
         description="Read and manage your Stripe data (customers, charges, invoices, subscriptions, refunds).",
-        auth_type="api_key", credential_fields=["secret_key"], credential_env_map={"secret_key": "STRIPE_SECRET_KEY"},
+        # Stripe Connect OAuth — Stripe's own recommended pattern for "let a third-party app
+        # manage a user's Stripe account on their behalf", not the platform/marketplace-only
+        # flow it's sometimes mistaken for. The user clicks Connect, logs into Stripe, approves,
+        # and we get a per-account access token — no secret key ever typed by them.
+        scopes=["read_write"],
+        authorize_url="https://connect.stripe.com/oauth/authorize", token_url="https://connect.stripe.com/oauth/token",
+        client_id_env="STRIPE_CONNECT_CLIENT_ID", client_secret_env="STRIPE_CONNECT_CLIENT_SECRET",
         mcp_status="needs_server",
-        mcp_notes=("Stripe runs an official hosted MCP (mcp.stripe.com) and an official local toolkit "
-                   "(@stripe/agent-toolkit, npm/PyPI) that takes the key directly — a good candidate to wire up next. "
-                   "Use a restricted key (rk_), not the full secret key (sk_)."),
+        mcp_notes=("Enable Connect once under Stripe Dashboard > Settings > Connect to get a platform client_id "
+                   "(ca_...). Official @stripe/agent-toolkit (npm/PyPI) and the hosted mcp.stripe.com both accept "
+                   "the resulting per-account access token the same way they'd accept a secret key."),
     ),
     "paypal": ConnectorConfig(
         id="paypal", display_name="PayPal", category="Commerce & Finance",
@@ -598,10 +645,21 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "shopify": ConnectorConfig(
         id="shopify", display_name="Shopify", category="Commerce & Finance",
         description="Manage your Shopify store (products, orders, customers, inventory).",
-        auth_type="api_key", credential_fields=["shop_domain", "admin_api_access_token"],
-        credential_env_map={"shop_domain": "SHOPIFY_SHOP_DOMAIN", "admin_api_access_token": "SHOPIFY_ADMIN_API_TOKEN"},
+        # Real OAuth2, but per-store: every shop has its own authorize/token
+        # host, so the user supplies their store domain (not a secret) right
+        # before the popup opens — see requires_domain / oauth_service.py's
+        # `domain` parameter. One Shopify Partner app (operator-registered
+        # once) works across every store that installs it.
+        scopes=["read_products", "write_products", "read_orders", "write_orders", "read_customers"],
+        authorize_url="https://{domain}/admin/oauth/authorize",
+        token_url="https://{domain}/admin/oauth/access_token",
+        requires_domain=True, domain_label="Store domain", domain_placeholder="yourstore.myshopify.com",
+        client_id_env="SHOPIFY_CLIENT_ID", client_secret_env="SHOPIFY_CLIENT_SECRET",
         mcp_status="needs_server",
-        mcp_notes="Community npm `shopify-mcp` as a starting point. As of 2026-01-01 new custom apps must go through the Shopify Dev Dashboard with a 24h-expiring token instead of the legacy non-expiring one — verify current behavior for the specific store.",
+        mcp_notes=("Community npm `shopify-mcp` as a starting point. As of 2026-01-01 new custom/public apps get a "
+                   "24h-expiring access token instead of the legacy non-expiring one — oauth_service.py's generic "
+                   "refresh path only engages if Shopify's token response includes expires_in; verify current "
+                   "behavior before relying on long-lived access."),
     ),
     "quickbooks": ConnectorConfig(
         id="quickbooks", display_name="QuickBooks (Intuit)", category="Commerce & Finance",

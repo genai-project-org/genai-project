@@ -2,17 +2,19 @@
 
 How to register each of the 52 connectors in `services/mcp/registry.py` and get real credentials into this app. Read this section before touching anything below.
 
-## Two kinds of connector
+## Three kinds of connector
 
-**OAuth2** — the user clicks "Connect" in the app, logs into the provider, approves access, and is redirected back. This needs *you* (the operator) to register one OAuth app per provider in that provider's developer dashboard, and put its **Client ID / Client Secret into `apps/api/.env`** (never per-user — one app serves everyone). The exact env var names are given per-connector below and already have empty placeholders in `.env`.
+**OAuth2** (the default, and the only one most users will ever see) — the user clicks "Connect", a popup opens to the provider's own login/approve screen, and the popup closes itself once they approve — the main app never navigates away. This needs *you* (the operator) to register one OAuth app per provider in that provider's developer dashboard, once, and put its **Client ID / Client Secret into `apps/api/.env`** (never per-user — one app serves everyone). The exact env var names are given per-connector below and already have empty placeholders in `.env`. A few of these (Shopify) are *per-store* OAuth — the popup asks the user for their store domain first (not a secret, just which host to send them to), then proceeds exactly the same way.
 
-**API key** — the provider has no practical per-user consent redirect for this use case (a static secret the user copies from their own account dashboard instead — e.g. a Stripe secret key, AWS access keys). There is **nothing to put in `.env`** for these — each user pastes their own value(s) directly into the app's Connectors page, which encrypts and stores them per-user. The "credential fields" listed below are what the Connectors page will ask that user to paste.
+**redirect_token** (Trello only, today) — not standard OAuth2 (no client secret, no server-side code exchange), but still a pure click-Connect-and-approve popup from the user's side: Trello hands back the per-user token directly in the redirect, nothing typed or copied. You register one public Trello API key (not secret) in `.env`.
+
+**API key** — a small number of providers (Telegram, Twilio, Freshdesk, SendGrid, CircleCI, Vercel, AWS) genuinely have no OAuth consent flow for this use case — confirmed per-provider, not a shortcut we took. For these, and only these, the Connect button opens a small dialog asking the user to paste a value they copy from that provider's own dashboard. There is **nothing to put in `.env`** for these — each user's value is stored encrypted per-user. The Connectors page labels these cards "Requires API key" so it's never ambiguous which ones work differently.
 
 ## Redirect URI
 
-Every OAuth2 connector below needs your redirect URI registered on the provider's side. Use:
-- Local dev: `http://localhost:5173/connectors`
-- Production: `https://<your-domain>/connectors`
+Every OAuth2 (and redirect_token) connector below needs your redirect URI registered on the provider's side (for providers that require exact pre-registration — Trello's flow doesn't). Use:
+- Local dev: `http://localhost:5174/connectors/oauth-callback`
+- Production: `https://<your-domain>/connectors/oauth-callback`
 
 A few providers have quirks (HTTPS-only, no localhost, etc.) — called out per connector below.
 
@@ -52,7 +54,7 @@ Every connector's **Connect/Disconnect flow works today** — registering the OA
 | Asana | Project Management | OAuth2 | ✅ | `.env`: `ASANA_CLIENT_ID/SECRET` |
 | Linear | Project Management | OAuth2 | ✅ | `.env`: `LINEAR_CLIENT_ID/SECRET` |
 | Jira | Project Management | OAuth2 | ✅ | `.env`: `ATLASSIAN_CLIENT_ID/SECRET` |
-| Trello | Project Management | API key | 🔧 | App UI: API key + token |
+| Trello | Project Management | Redirect token | 🔧 | `.env`: `TRELLO_API_KEY` (public, no secret) |
 | ClickUp | Project Management | OAuth2 | 🔧 | `.env`: `CLICKUP_CLIENT_ID/SECRET` |
 | monday.com | Project Management | OAuth2 | ✅ | `.env`: `MONDAY_CLIENT_ID/SECRET` |
 | Basecamp | Project Management | OAuth2 | 🔧 | `.env`: `BASECAMP_CLIENT_ID/SECRET` |
@@ -61,8 +63,8 @@ Every connector's **Connect/Disconnect flow works today** — registering the OA
 | Bitbucket | Developer Tools | OAuth2 | 🔧 | `.env`: `BITBUCKET_CLIENT_ID/SECRET` |
 | Vercel | Developer Tools | API key | 🔧 | App UI: access token |
 | AWS | Developer Tools | API key | 🔧 | App UI: access key ID + secret + region |
-| Azure | Developer Tools | API key | 🔧 | App UI: tenant/client ID + secret + subscription ID |
-| GCP | Developer Tools | API key | 🔧 | App UI: project ID + service account JSON |
+| Azure | Developer Tools | OAuth2 | 🔧 | `.env` (reuses `MS_GRAPH_CLIENT_ID/SECRET`) |
+| GCP | Developer Tools | OAuth2 | 🔧 | `.env` (reuses `GOOGLE_CLIENT_ID/SECRET`) |
 | CircleCI | Developer Tools | API key | 🔧 | App UI: API token |
 | Sentry | Developer Tools | OAuth2 | ✅ | `.env`: `SENTRY_CLIENT_ID/SECRET` |
 | HubSpot | CRM & Support | OAuth2 | ✅ | `.env`: `HUBSPOT_CLIENT_ID/SECRET` |
@@ -73,9 +75,9 @@ Every connector's **Connect/Disconnect flow works today** — registering the OA
 | Mailchimp | CRM & Support | OAuth2 | 🔧 | `.env`: `MAILCHIMP_CLIENT_ID/SECRET` |
 | SendGrid | CRM & Support | API key | 🔧 | App UI: API key |
 | DocuSign | CRM & Support | OAuth2 | 🔧 | `.env`: `DOCUSIGN_CLIENT_ID/SECRET` |
-| Stripe | Commerce & Finance | API key | 🔧 | App UI: secret key |
+| Stripe | Commerce & Finance | OAuth2 (Connect) | 🔧 | `.env`: `STRIPE_CONNECT_CLIENT_ID/SECRET` |
 | PayPal | Commerce & Finance | API key | 🔧 | App UI: client ID + secret + mode |
-| Shopify | Commerce & Finance | API key | 🔧 | App UI: shop domain + admin API token |
+| Shopify | Commerce & Finance | OAuth2 (per-store) | 🔧 | `.env`: `SHOPIFY_CLIENT_ID/SECRET` |
 | QuickBooks | Commerce & Finance | OAuth2 | 🔧 | `.env`: `QUICKBOOKS_CLIENT_ID/SECRET` |
 | Twitter/X | Social Media | OAuth2 | 🔧 | `.env`: `X_CLIENT_ID/SECRET` |
 | LinkedIn | Social Media | OAuth2 | 🔧 | `.env` (reuses `LINKEDIN_CLIENT_ID/SECRET`) |
@@ -203,9 +205,10 @@ Read/manage issues, projects, cycles, comments.
 
 ### Trello 🔧
 Read/manage boards, lists, and cards.
-- **No standard OAuth2** — Trello uses an API key + a separate per-user token.
-- **Dashboard**: [trello.com/power-ups/admin](https://trello.com/power-ups/admin) → create a Power-Up, open its API Key tab, generate a key, and add your app's return URL to its allow-list.
-- The user then visits `https://trello.com/1/authorize?expiration=never&name=YourApp&scope=read,write&response_type=token&key={your_api_key}&return_url={your_redirect}`, approves, and the token comes back in the URL — paste both the API key and the resulting token into the app's Connectors page (**not** `.env`).
+- **Not standard OAuth2** (no client secret, no server-side code exchange), but still a pure click-Connect-and-approve popup for the user — see "redirect_token" in the intro above.
+- **Dashboard** (one-time, operator-only): [trello.com/power-ups/admin](https://trello.com/power-ups/admin) → create a Power-Up, open its API Key tab, generate a key.
+- Paste into `.env`: `TRELLO_API_KEY` (this is a public identifier, not a secret — it's safe to appear in the authorize URL).
+- The user just clicks Connect, approves in the popup, and the per-user token comes back automatically — they never see or type anything.
 
 ### ClickUp 🔧
 Read/manage tasks, lists, docs.
@@ -264,17 +267,17 @@ Call AWS APIs (S3, EC2, CloudWatch, Bedrock, etc.) with your own credentials.
 - ⚠️ Use a narrow IAM policy — never `AdministratorAccess`. These keys don't expire by default; rotate periodically.
 
 ### Azure 🔧
-Call Azure APIs with a service principal from your own tenant.
-- **Dashboard**: [portal.azure.com](https://portal.azure.com) → Microsoft Entra ID → App registrations → New registration. Copy the Application (client) ID and Directory (tenant) ID. Create a client secret under Certificates & secrets.
-- Grant it a **narrow** built-in role (e.g. "Storage Blob Data Reader") scoped to a specific resource group, via Access control (IAM) on that resource — never Owner/Contributor at subscription scope.
-- Paste tenant ID, client ID, client secret, and subscription ID into the app's Connectors page (**not** `.env`).
-- Gotcha: the client secret has a hard expiration (you choose, up to ~24 months) — track and rotate before it lapses.
+Call Azure Resource Manager APIs on resources you have permission to manage.
+- Real delegated OAuth — the user just logs in with their own Microsoft account and approves; they can only ever act on resources that account already has permission on. No service principal or client secret from them.
+- **Dashboard** (operator, one-time): reuse the same Entra app registration as Microsoft Teams/Outlook/OneDrive above. Under API permissions, add **Azure Service Management** (delegated, `user_impersonation`) alongside whatever Graph permissions it already has.
+- No new `.env` entries — reuses `MS_GRAPH_CLIENT_ID`/`MS_GRAPH_CLIENT_SECRET`.
 
 ### GCP 🔧
-Call GCP APIs (Cloud SQL, BigQuery, Storage, etc.) with a service account from your own project.
-- **Dashboard**: [console.cloud.google.com/iam-admin/serviceaccounts](https://console.cloud.google.com/iam-admin/serviceaccounts) → Create Service Account → grant a narrow predefined role (not Owner/Editor) → Keys tab → Add Key → JSON.
-- Paste your project ID and the downloaded JSON key's contents into the app's Connectors page (**not** `.env`).
-- Gotcha: the JSON key never expires and is a full bearer credential — store carefully, rotate periodically.
+Call GCP APIs (Cloud SQL, BigQuery, Storage, etc.) on your own projects.
+- Real OAuth — same Google account consent screen as Calendar/Gmail/Docs, just the broader `cloud-platform` scope. The user grants delegated access to their own GCP projects; no service account JSON key needed from them.
+- **Dashboard**: same Google Cloud project as Calendar/Gmail — no new app registration needed.
+- No new `.env` entries — reuses `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`.
+- Gotcha: `cloud-platform` is a broad/sensitive scope — the same Testing-mode 100-user cap and Google verification requirement as the other Google connectors applies past that.
 
 ### CircleCI 🔧
 Inspect/manage pipelines, workflows, job runs.
@@ -344,9 +347,10 @@ Create/send envelopes for e-signature, check status.
 
 ### Stripe 🔧
 Read/manage customers, charges, invoices, subscriptions, refunds.
-- **Dashboard**: [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys) → Create restricted key → grant only the permissions needed.
-- Paste the key into the app's Connectors page (**not** `.env`).
-- Gotcha: use a restricted key (`rk_`), never the full secret key (`sk_`). Test (`_test_`) and live (`_live_`) keys are entirely separate data.
+- Real OAuth2 — Stripe Connect, Stripe's own recommended pattern for "let a third-party app manage a user's Stripe account on their behalf." The user clicks Connect, logs into Stripe, approves — no key typed.
+- **Dashboard** (operator, one-time): Stripe Dashboard → Settings → Connect → enable Connect → copy the platform Client ID (`ca_...`).
+- Paste into `.env`: `STRIPE_CONNECT_CLIENT_ID`, `STRIPE_CONNECT_CLIENT_SECRET`.
+- Gotcha: test and live modes use separate Connect client IDs, same as Stripe's regular API keys.
 
 ### PayPal 🔧
 Read/manage orders, invoices, payouts, transactions.
@@ -356,9 +360,10 @@ Read/manage orders, invoices, payouts, transactions.
 
 ### Shopify 🔧
 Manage products, orders, customers, inventory.
-- **Dashboard**: store admin → Settings → Apps and sales channels → Develop apps → Create an app → select Admin API scopes → Install app → reveal the Admin API access token.
-- Paste the shop's `.myshopify.com` domain and the token into the app's Connectors page (**not** `.env`).
-- Gotcha: as of 2026-01-01, new custom apps go through the Shopify Dev Dashboard with a 24h-expiring token instead of the old non-expiring one — verify current behavior for the specific store.
+- Real OAuth2, but per-store — every shop has its own authorize/token host. The Connectors page asks the user for their store domain (not a secret) right before opening the popup.
+- **Dashboard** (operator, one-time): [partners.shopify.com](https://partners.shopify.com) → create a Public (or Custom Distribution) app → set the redirect URI → copy the Client ID/Secret. One app works across every store that installs it.
+- Paste into `.env`: `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`.
+- Gotcha: as of 2026-01-01, new apps get a 24h-expiring access token instead of the old non-expiring one — `oauth_service.py`'s generic refresh path only engages if Shopify's token response includes `expires_in`; verify current behavior for the specific store before relying on long-lived access.
 
 ### QuickBooks (Intuit) 🔧
 Read/manage invoices, bills, customers, reports.

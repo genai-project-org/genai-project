@@ -9,11 +9,57 @@ import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Loader2, Download, Briefcase, ThumbsUp, ThumbsDown, ShieldCheck, RefreshCw } from 'lucide-react';
-import { detailToString, downloadBlob, DIMENSION_ORDER, DIMENSION_LABEL } from './interviewUtils';
+import { Loader2, Download, Briefcase, ThumbsUp, ThumbsDown, ShieldCheck, RefreshCw, Video, VideoOff } from 'lucide-react';
+import { detailToString, downloadBlob, DIMENSION_ORDER, DIMENSION_LABEL, VIOLATION_LABEL } from './interviewUtils';
 
 const POLL_MS = 3000;
 const MAX_POLL_ATTEMPTS = 100; // ~5 minutes — an abandoned session's report never generates, so this caps the wait
+
+// Shared by both the "ready" and "no_data" report views — any session that
+// picked up proctoring violations shows exactly what was flagged and when,
+// with an on-demand signed-URL fetch per clip (never a durable link baked
+// into the report payload itself — see the backend's _violations_public).
+function ViolationsList({ sessionId, violations }) {
+  const [loadingId, setLoadingId] = useState(null);
+  if (!violations?.length) return null;
+
+  const viewEvidence = async (violationId) => {
+    setLoadingId(violationId);
+    try {
+      const { data } = await api.get(`/interview/sessions/${sessionId}/violations/${violationId}/evidence-url`);
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      toast.error(detailToString(e, 'No evidence clip available for this violation.'));
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-5 mb-8" data-testid="interview-violations-list">
+      <div className="flex items-center gap-1.5 font-medium text-rose-600 dark:text-rose-400 mb-3">
+        <ShieldCheck className="h-4 w-4" /> Proctoring violations ({violations.length})
+      </div>
+      <ul className="space-y-2.5 text-sm">
+        {violations.map((v) => (
+          <li key={v.id} className="flex items-center justify-between gap-3">
+            <span className="min-w-0">
+              <span className="font-medium">{VIOLATION_LABEL[v.type] || v.type}</span>
+              <span className="text-muted-foreground"> — {v.reported_at ? new Date(v.reported_at).toLocaleString() : 'unknown time'}</span>
+            </span>
+            {v.has_evidence ? (
+              <Button size="sm" variant="outline" className="shrink-0" onClick={() => viewEvidence(v.id)} disabled={loadingId === v.id} data-testid={`interview-violation-evidence-${v.id}`}>
+                {loadingId === v.id ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Video className="h-3.5 w-3.5 mr-1.5" />} View clip
+              </Button>
+            ) : (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground shrink-0"><VideoOff className="h-3.5 w-3.5" /> No clip captured</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export default function InterviewReport() {
   const { sessionId } = useParams();
@@ -96,12 +142,15 @@ export default function InterviewReport() {
 
   if (status === 'no_data') {
     return (
-      <div className="min-h-[70vh] flex flex-col items-center justify-center gap-4 text-center p-6" data-testid="interview-report-no-data">
-        <h2 className="font-display text-xl font-medium">No analysis available</h2>
-        <p className="text-sm text-muted-foreground max-w-sm">
-          This session ended without a single recorded answer, so there's nothing to score — usually a mic/camera
-          permission issue or a dropped connection, not a reflection of your performance. This attempt wasn't evaluated.
-        </p>
+      <div className="max-w-xl mx-auto min-h-[70vh] flex flex-col items-center justify-center gap-4 text-center p-6" data-testid="interview-report-no-data">
+        <div className="prose-chat text-sm text-muted-foreground max-w-sm">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{report?.report_markdown || 'This session ended without a single recorded answer, so there is nothing to score.'}</ReactMarkdown>
+        </div>
+        {report?.violations?.length > 0 && (
+          <div className="w-full text-left">
+            <ViolationsList sessionId={sessionId} violations={report.violations} />
+          </div>
+        )}
         <div className="flex gap-2">
           <Button onClick={() => navigate('/interview/new')} data-testid="interview-report-try-again-btn">Start a new interview</Button>
           <Button variant="outline" onClick={() => navigate('/interview')} data-testid="interview-report-back-btn">Back to Mock Interviews</Button>
@@ -207,6 +256,8 @@ export default function InterviewReport() {
           </ul>
         </motion.div>
       </div>
+
+      <ViolationsList sessionId={sessionId} violations={report.violations} />
 
       <motion.div
         initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.3 }}

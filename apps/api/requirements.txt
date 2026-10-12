@@ -37,6 +37,13 @@ fastuuid==0.14.0
 # see that module's docstring for the turn-based (not streaming) scope and
 # latency tradeoffs this implies. Pulls in ctranslate2 as a dependency.
 faster-whisper==1.2.1
+# av and onnxruntime are already transitive deps of faster-whisper, but
+# speech_service.py now imports both DIRECTLY (av to decode candidate audio
+# for the speaker-embedding check, onnxruntime to run that embedding model)
+# — pinned explicitly so that relationship doesn't silently break if
+# faster-whisper's own dependency versions ever change.
+av==18.1.0
+onnxruntime==1.30.0
 filelock==3.29.7
 flake8==7.3.0
 fonttools==4.65.0

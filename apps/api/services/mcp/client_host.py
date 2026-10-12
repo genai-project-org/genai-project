@@ -76,6 +76,12 @@ class ConnectorSessionPool:
             if cfg.auth_type == "api_key":
                 creds = await api_key_service.get_credentials(self.user_id, connector_id)
                 injected_env = {cfg.credential_env_map[field]: creds[field] for field in cfg.credential_fields}
+            elif cfg.auth_type == "redirect_token":
+                creds = await api_key_service.get_credentials(self.user_id, connector_id)
+                # The operator's public app key (e.g. Trello's API key) alongside the
+                # per-user value that came back via the redirect popup.
+                injected_env = {cfg.client_id_env: cfg.client_id()}
+                injected_env.update({cfg.credential_env_map[field]: creds[field] for field in cfg.credential_fields})
             else:
                 access_token = await oauth_service.get_valid_access_token(self.user_id, connector_id)
                 injected_env = {cfg.token_env_var: access_token}

@@ -119,4 +119,5 @@ export const VIOLATION_LABEL = {
   fullscreen_exit: 'Exited fullscreen',
   copy_paste: 'Copy/paste attempted',
   devtools_suspected: 'Developer tools suspected open',
+  voice_mismatch: 'A different voice answered this question',
 };

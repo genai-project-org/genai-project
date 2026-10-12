@@ -10,13 +10,18 @@ Routing is by the `provider` string passed to `LlmChat.with_model(provider, mode
 compatibility with older call sites but ignored — real keys always come from
 the per-provider env vars above.
 """
+import json
+import logging
 import os
 import base64
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import AsyncGenerator, List, Optional
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -29,6 +34,11 @@ NONSTREAM_MAX_TOKENS = int(os.environ.get("LLM_NONSTREAM_MAX_TOKENS", "16000"))
 GEMINI_BASE_URL = os.environ.get(
     "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
 )
+# Tool-use fallback target (see LlmChat.create_with_tools) — "gpt-5" rather
+# than the cheaper gpt-5-mini default elsewhere in this codebase, since this
+# only ever substitutes for claude-sonnet-5 running something as substantial
+# as a live mock interview, not a cheap/quick task.
+OPENAI_FALLBACK_MODEL = os.environ.get("OPENAI_FALLBACK_MODEL", "gpt-5")
 
 _KEY_ENV = {
     "anthropic": ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
@@ -148,17 +158,35 @@ class LlmChat:
         # run, so clamp here. Only stream_message() gets the full per-model budget.
         budget = min(self.max_tokens, NONSTREAM_MAX_TOKENS)
         if self.provider == "anthropic":
-            client = AsyncAnthropic(api_key=_require_key("anthropic"))
-            resp = await client.messages.create(
-                model=self.model,
-                max_tokens=budget,
-                system=self.system or None,
-                messages=[{"role": "user", "content": self._anthropic_content(msg)}],
-            )
-            return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-        client = _openai_client(self.provider)
-        resp = await client.chat.completions.create(
+            try:
+                return await self._send_message_anthropic(msg, budget)
+            except Exception as e:
+                # Same reasoning as create_with_tools: a one-shot call has no
+                # in-flight state to translate, so the fallback here is just
+                # "ask the other provider the same question" — no shape
+                # normalization needed. Without this, every Anthropic-only
+                # call site (e.g. interview_report_service's narrative pass)
+                # silently degrades to "No verdict generated" / empty
+                # strengths any time Anthropic is unavailable, which reads as
+                # a product bug, not a billing issue.
+                logger.warning(f"LlmChat.send_message: Anthropic call failed ({e!r}); falling back to OpenAI")
+                return await self._send_message_openai(msg, budget, model=OPENAI_FALLBACK_MODEL, provider="openai")
+        return await self._send_message_openai(msg, budget, model=self.model, provider=self.provider)
+
+    async def _send_message_anthropic(self, msg: UserMessage, budget: int) -> str:
+        client = AsyncAnthropic(api_key=_require_key("anthropic"))
+        resp = await client.messages.create(
             model=self.model,
+            max_tokens=budget,
+            system=self.system or None,
+            messages=[{"role": "user", "content": self._anthropic_content(msg)}],
+        )
+        return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+
+    async def _send_message_openai(self, msg: UserMessage, budget: int, model: str, provider: str) -> str:
+        client = _openai_client(provider)
+        resp = await client.chat.completions.create(
+            model=model,
             messages=self._openai_messages(msg),
             # ponytail: gpt-5/reasoning models require max_completion_tokens (not max_tokens);
             # bump LLM_MAX_TOKENS if long answers get truncated.
@@ -197,38 +225,178 @@ class LlmChat:
                 yield TextDelta(content=delta)
         yield StreamDone()
 
-    # -- tool-use (Anthropic only) --
+    # -- tool-use (Anthropic primary, OpenAI fallback) --
 
     async def create_with_tools(self, messages: list, tools: list,
                                  system: Optional[str] = None, max_tokens: Optional[int] = None):
-        """One raw Anthropic `messages.create()` call with tool-use enabled.
+        """One tool-use call. Returns an object shaped like Anthropic's
+        `Message` regardless of which provider actually served it: `.content`
+        is a list of blocks with `.type` in ("text", "tool_use") — text
+        blocks have `.text`, tool_use blocks have `.id`/`.name`/`.input` — and
+        `.stop_reason` is "tool_use" or "end_turn". Callers (see
+        interview_agent.run_turn) inspect this shape and manage the message
+        history themselves; this method makes exactly one call and does not
+        loop.
 
-        Anthropic-only: Mock Interview's agent loop (services/interview_agent.py)
-        is the one place in this codebase stateful/complex enough that
-        cross-provider failover — which would mean translating an in-flight
-        tool-call transcript between Anthropic's and OpenAI's very different
-        tool-calling wire formats — isn't worth building. This mirrors
-        practice_ai_service.generate_variant()'s existing precedent of
-        hardcoding "anthropic" for its own multi-step LLM flow.
+        `messages` is ALWAYS in this same Anthropic-block shape too (never
+        OpenAI's), including whatever a PRIOR call in this same loop
+        returned — _create_with_tools_openai() translates it to/from OpenAI's
+        wire format internally, on every call, so the caller's message list
+        never needs to know which provider actually served any given turn.
 
-        Returns the raw Anthropic `Message`; callers inspect `.content` for
-        `tool_use` blocks and `.stop_reason` themselves. This method makes
-        exactly one call and does not loop — looping/tool-execution is the
-        caller's responsibility, since only the caller knows how to run its
-        own tools.
+        Fallback: if the primary `self.provider == "anthropic"` call raises
+        (most often a billing/availability failure — out of credits, rate
+        limited, an outage), this retries the SAME call against OpenAI
+        (OPENAI_FALLBACK_MODEL) before giving up. This is why the
+        shape-normalization above exists at all — Mock Interview's agent loop
+        (services/interview_agent.py) can keep speaking one format without
+        caring which provider is actually behind any given turn, including
+        turns from BEFORE a mid-session failover.
         """
-        if self.provider != "anthropic":
-            raise NotImplementedError(
-                "Tool-use is Anthropic-only in this codebase — see LlmChat.create_with_tools."
-            )
+        if self.provider == "anthropic":
+            try:
+                return await self._create_with_tools_anthropic(messages, tools, system, max_tokens)
+            except Exception as e:
+                logger.warning(f"LlmChat.create_with_tools: Anthropic call failed ({e!r}); falling back to OpenAI")
+                try:
+                    return await self._create_with_tools_openai(
+                        messages, tools, system, max_tokens, model=OPENAI_FALLBACK_MODEL,
+                    )
+                except Exception:
+                    logger.exception("LlmChat.create_with_tools: OpenAI fallback also failed")
+                    raise e  # surface the ORIGINAL Anthropic failure — more actionable than the fallback's own error
+        if self.provider == "openai":
+            return await self._create_with_tools_openai(messages, tools, system, max_tokens, model=self.model)
+        raise NotImplementedError(
+            f"Tool-use isn't supported for provider {self.provider!r} — only anthropic (with an openai fallback) and openai."
+        )
+
+    async def _create_with_tools_anthropic(self, messages: list, tools: list,
+                                           system: Optional[str], max_tokens: Optional[int]):
         client = AsyncAnthropic(api_key=_require_key("anthropic"))
         return await client.messages.create(
             model=self.model,
             max_tokens=max_tokens or self.max_tokens,
             system=system if system is not None else (self.system or None),
-            messages=messages,
+            messages=self._sanitize_for_anthropic(messages),
             tools=tools,
         )
+
+    @staticmethod
+    def _sanitize_for_anthropic(messages: list) -> list:
+        """Converts any content block that isn't already a plain dict (a real
+        Anthropic SDK object from an EARLIER iteration of THIS SAME tool loop
+        that actually ran on Anthropic, or a SimpleNamespace pseudo-block from
+        an earlier iteration that fell back to OpenAI — see
+        _openai_response_to_anthropic_shape) into a plain JSON-serializable
+        dict. Without this, once a tool loop falls back to OpenAI even once,
+        every subsequent iteration's Anthropic retry crashes with "Object of
+        type SimpleNamespace is not JSON serializable" the moment httpx tries
+        to encode the request body — Anthropic's own SDK objects happen to be
+        safe to serialize directly, which is why this bug only ever surfaces
+        after at least one fallback has already happened in the same loop."""
+        def get(block, key, default=None):
+            return getattr(block, key, None) if not isinstance(block, dict) else block.get(key, default)
+
+        out = []
+        for m in messages:
+            content = m["content"]
+            if isinstance(content, str):
+                out.append(m)
+                continue
+            new_blocks = []
+            for b in content:
+                if isinstance(b, dict):
+                    new_blocks.append(b)
+                elif get(b, "type") == "text":
+                    new_blocks.append({"type": "text", "text": get(b, "text")})
+                elif get(b, "type") == "tool_use":
+                    new_blocks.append({"type": "tool_use", "id": get(b, "id"), "name": get(b, "name"), "input": get(b, "input") or {}})
+                else:
+                    new_blocks.append(b)  # unrecognized shape — pass through best-effort
+            out.append({"role": m["role"], "content": new_blocks})
+        return out
+
+    async def _create_with_tools_openai(self, messages: list, tools: list,
+                                        system: Optional[str], max_tokens: Optional[int], model: str):
+        client = _openai_client("openai")
+        openai_messages = self._anthropic_messages_to_openai(
+            messages, system if system is not None else (self.system or None),
+        )
+        openai_tools = [
+            {"type": "function", "function": {
+                "name": t["name"], "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+            }}
+            for t in tools
+        ]
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=openai_messages,
+            tools=openai_tools,
+            max_completion_tokens=max_tokens or self.max_tokens,
+        )
+        return self._openai_response_to_anthropic_shape(resp)
+
+    @staticmethod
+    def _anthropic_messages_to_openai(messages: list, system: Optional[str]) -> list:
+        """Translates an Anthropic-block-shaped message history (see
+        create_with_tools's docstring) into OpenAI's chat-completions shape.
+        Every block is accessed via getattr/.get duck-typing since a block
+        may be a real Anthropic SDK object (this provider's own prior turn),
+        a SimpleNamespace from _openai_response_to_anthropic_shape (a PRIOR
+        turn that was itself served by the OpenAI fallback), or a plain dict
+        (the tool_result entries interview_agent.run_turn builds by hand)."""
+        def get(block, key, default=None):
+            return getattr(block, key, None) if not isinstance(block, dict) else block.get(key, default)
+
+        out = []
+        if system:
+            out.append({"role": "system", "content": system})
+        for m in messages:
+            content = m["content"]
+            if isinstance(content, str):
+                out.append({"role": m["role"], "content": content})
+                continue
+            if m["role"] == "user" and content and get(content[0], "type") == "tool_result":
+                # Anthropic nests every tool result for a turn under one user
+                # message; OpenAI wants each as its own standalone "tool" message.
+                for block in content:
+                    out.append({
+                        "role": "tool",
+                        "tool_call_id": get(block, "tool_use_id"),
+                        "content": get(block, "content", ""),
+                    })
+                continue
+            # Assistant turn: a mix of text block(s) and/or tool_use block(s).
+            text_parts = [get(b, "text") for b in content if get(b, "type") == "text"]
+            tool_use_blocks = [b for b in content if get(b, "type") == "tool_use"]
+            assistant_msg = {"role": "assistant", "content": "".join(p for p in text_parts if p) or None}
+            if tool_use_blocks:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": get(b, "id"), "type": "function",
+                        "function": {"name": get(b, "name"), "arguments": json.dumps(get(b, "input") or {})},
+                    }
+                    for b in tool_use_blocks
+                ]
+            out.append(assistant_msg)
+        return out
+
+    @staticmethod
+    def _openai_response_to_anthropic_shape(resp):
+        msg = resp.choices[0].message
+        blocks = []
+        if msg.content:
+            blocks.append(SimpleNamespace(type="text", text=msg.content))
+        for tc in (msg.tool_calls or []):
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                args = {}
+            blocks.append(SimpleNamespace(type="tool_use", id=tc.id, name=tc.function.name, input=args))
+        stop_reason = "tool_use" if msg.tool_calls else "end_turn"
+        return SimpleNamespace(content=blocks, stop_reason=stop_reason)
 
 
 # ---- image generation ------------------------------------------------------

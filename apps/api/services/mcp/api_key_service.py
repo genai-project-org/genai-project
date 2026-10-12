@@ -17,11 +17,12 @@ class ApiKeyError(ValueError):
     pass
 
 
-def _connector_or_raise(connector_id: str) -> ConnectorConfig:
+def _connector_or_raise(connector_id: str, allow_redirect_token: bool = False) -> ConnectorConfig:
     cfg = get_connector(connector_id)
     if not cfg:
         raise ApiKeyError(f"Unknown connector: {connector_id}")
-    if cfg.auth_type != "api_key":
+    allowed = ("api_key", "redirect_token") if allow_redirect_token else ("api_key",)
+    if cfg.auth_type not in allowed:
         raise ApiKeyError(f"{connector_id} is not an api_key connector")
     return cfg
 
@@ -50,7 +51,7 @@ async def save_connection(user_id: str, connector_id: str, values: Dict[str, str
 
 
 async def get_credentials(user_id: str, connector_id: str) -> Dict[str, str]:
-    cfg = _connector_or_raise(connector_id)
+    cfg = _connector_or_raise(connector_id, allow_redirect_token=True)
     conn = await mcp_connections_col.find_one({"user_id": user_id, "connector_id": connector_id})
     if not conn:
         raise ApiKeyError(f"{cfg.display_name} is not connected")

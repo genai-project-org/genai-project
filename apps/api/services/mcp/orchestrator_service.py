@@ -40,9 +40,10 @@ silently ignore a request for a not-connected service):
 
 Use tools as needed to fulfill the user's request, including calling multiple tools across multiple \
 services if the request requires it. If the request needs a service that isn't connected, tell the user \
-plainly which one to connect from the Connectors page — don't attempt it, refuse vaguely, or pretend you did \
-it. When finished, give a clear, concise plain-language summary of what you did or found — the user cannot \
-see your tool calls, only your final reply."""
+plainly which one to connect, and give them a markdown link to the Connectors page exactly like this: \
+[Connectors page](/connectors) — don't attempt it, refuse vaguely, or pretend you did it. When finished, \
+give a clear, concise plain-language summary of what you did or found — the user cannot see your tool \
+calls, only your final reply."""
 
 
 async def _connected_connector_ids(user_id: str) -> List[str]:
