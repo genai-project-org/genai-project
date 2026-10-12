@@ -174,7 +174,8 @@ async def test_spend_raises_402_when_wallet_balance_insufficient():
     assert exc_info.value.status_code == 402
 
 
-async def test_spend_raises_429_when_window_exhausted():
+async def test_spend_raises_429_when_window_exhausted(monkeypatch):
+    monkeypatch.setattr(pricing_engine, "ENFORCE_USAGE_WINDOW", True)
     await _seed_pricing("widget_use", cost=10, provider="anthropic")
     await _seed_plan("free", window_hours=4, window_credits=5)  # cap below cost
     user_id = await _make_user("free")
@@ -214,7 +215,8 @@ async def test_spend_free_service_records_usage_without_guard():
     assert result["balance"] is None
 
 
-async def test_precheck_raises_without_deducting():
+async def test_precheck_raises_without_deducting(monkeypatch):
+    monkeypatch.setattr(pricing_engine, "ENFORCE_USAGE_WINDOW", True)
     await _seed_pricing("widget_use", cost=10, provider="anthropic")
     await _seed_plan("free", window_hours=4, window_credits=5)
     user_id = await _make_user("free")

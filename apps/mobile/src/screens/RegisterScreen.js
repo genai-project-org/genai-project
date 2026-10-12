@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, KeyboardAvoidingView, Platform, Alert, Linking } from 'react-native';
 import { useDispatch } from 'react-redux';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +16,10 @@ export default function RegisterScreen({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [welcome, setWelcome] = useState(null);
+  useEffect(() => {
+    api.get('/pricing').then((r) => setWelcome(r.data.welcome_credits)).catch(() => {});
+  }, []);
 
   const submit = async () => {
     if (!name || !email || password.length < 6) {
@@ -41,7 +45,7 @@ export default function RegisterScreen({ navigation }) {
           <Text style={{ color: colors.text, fontSize: fontSize.md, fontWeight: '600' }}>IEMA<Text style={{ color: colors.primary }}>.</Text>ai</Text>
         </View>
         <Text style={{ color: colors.text, fontSize: fontSize.hero, fontWeight: '600', letterSpacing: -1 }}>Create account</Text>
-        <Text style={{ color: colors.textMuted, fontSize: fontSize.md, marginTop: 8 }}>Start with 100 free credits. No card required.</Text>
+        <Text style={{ color: colors.textMuted, fontSize: fontSize.md, marginTop: 8 }}>{welcome != null ? `Start with ${Math.floor(welcome)} free credits. No card required.` : 'Start free. No card required.'}</Text>
 
         <View style={{ marginTop: 32 }}>
           <SocialAuthButtons />

@@ -15,6 +15,7 @@ import { hydrate } from './src/store/slices/authSlice';
 import { loadAuth } from './src/authStorage';
 import { colors } from './src/theme';
 import RootNavigator from './src/navigation/RootNavigator';
+import { navigationRef } from './src/navigationRef';
 
 const navTheme = {
   dark: true,
@@ -55,7 +56,7 @@ function Root() {
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer theme={navTheme} ref={navigationRef}>
       <RootNavigator />
     </NavigationContainer>
   );

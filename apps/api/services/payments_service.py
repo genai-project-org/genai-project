@@ -178,6 +178,30 @@ async def handle_razorpay_webhook(body: bytes, signature: str) -> Dict[str, Any]
     return {"ok": True, "event": event}
 
 
+# ==================== consumable credit packs (IAP) ====================
+async def credit_pack_product(user_id: str, product_id: str, source: str, ref_id: str) -> Optional[Dict[str, Any]]:
+    """If `product_id` is a published credit-pack store product, credit the wallet (idempotent
+    on `ref_id` via the iap_receipts collection). Returns None when it is not a pack product."""
+    from db import credit_packs_col
+    from services.credit_service import add_credits
+    pack = await credit_packs_col.find_one({"product_id": product_id, "currency": "usd"})
+    if not pack:
+        return None
+    total = float(pack["credits"]) + float(pack.get("bonus_credits", 0))
+    if await iap_receipts_col.find_one({"txn_id": ref_id}):
+        return {"ok": True, "already_processed": True, "credits": total, "product_id": product_id}
+    await iap_receipts_col.insert_one({
+        "user_id": user_id, "store": source, "product_id": product_id, "txn_id": ref_id,
+        "pack_slug": pack["slug"], "credits": total, "created_at": now_iso(),
+    })
+    wallet = await add_credits(user_id, total, bucket="purchased", kind="purchase",
+                               description=f"Purchase: {pack['name']} ({source})", ref_id=ref_id)
+    await log_event("pack_purchased", user_id=user_id,
+                    payload={"product_id": product_id, "source": source, "ref_id": ref_id, "credits": total})
+    return {"ok": True, "credits": total, "balance": wallet.total, "product_id": product_id,
+            "pack_slug": pack["slug"]}
+
+
 # ==================== Apple App Store IAP ====================
 APPLE_VERIFY_PROD = "https://buy.itunes.apple.com/verifyReceipt"
 APPLE_VERIFY_SANDBOX = "https://sandbox.itunes.apple.com/verifyReceipt"
@@ -203,6 +227,15 @@ async def verify_apple_receipt(user_id: str, receipt_b64: str, product_to_plan: 
     purchase = latest[-1]
     product_id = purchase.get("product_id")
     txn_id = purchase.get("transaction_id")
+    # Consumable credit packs: credit every not-yet-seen pack purchase in the receipt.
+    pack_results = []
+    for item in latest:
+        r = await credit_pack_product(user_id, item.get("product_id"), "apple", item.get("transaction_id"))
+        if r:
+            pack_results.append(r)
+    if pack_results:
+        fresh = [r for r in pack_results if not r.get("already_processed")]
+        return {**pack_results[-1], "credits": sum(r["credits"] for r in fresh) or pack_results[-1]["credits"]}
     iema_plan = product_to_plan.get(product_id)
     if not iema_plan:
         return {"ok": False, "error": f"unknown product {product_id}"}
@@ -261,6 +294,9 @@ async def verify_google_receipt(user_id: str, product_id: str, purchase_token: s
     if not is_subscription and state != 0:  # 0 = purchased for products
         return {"ok": False, "error": f"purchase state={state}"}
 
+    pack_res = await credit_pack_product(user_id, product_id, "google", purchase_token)
+    if pack_res:
+        return pack_res
     iema_plan = product_to_plan.get(product_id)
     if not iema_plan:
         return {"ok": False, "error": f"unknown product {product_id}"}

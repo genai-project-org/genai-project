@@ -13,6 +13,7 @@ const uiSlice = createSlice({
     theme: storedTheme,  // 'light' | 'dark' | 'system'
     sidebarCollapsed: storedCollapsed,
     walletBalance: null,
+    rechargePrompt: null, // { balance, needed } when an action was blocked by an empty wallet
   },
   reducers: {
     setTheme: (state, action) => {
@@ -29,8 +30,14 @@ const uiSlice = createSlice({
     setWalletBalance: (state, action) => {
       state.walletBalance = action.payload;
     },
+    showRecharge: (state, action) => {
+      state.rechargePrompt = action.payload || {};
+    },
+    hideRecharge: (state) => {
+      state.rechargePrompt = null;
+    },
   },
 });
 
-export const { setTheme, toggleSidebar, setSidebar, setWalletBalance } = uiSlice.actions;
+export const { setTheme, toggleSidebar, setSidebar, setWalletBalance, showRecharge, hideRecharge } = uiSlice.actions;
 export default uiSlice.reducer;
