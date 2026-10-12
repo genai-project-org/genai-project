@@ -4,7 +4,10 @@ Parameterized by services/mcp/registry.py's ConnectorConfig so every connector
 shares one implementation — the same httpx-based code-exchange/refresh shape
 already proven in services/gmail_service.py, generalized across providers.
 """
+import base64
+import hashlib
 import logging
+import os
 import secrets
 from datetime import timedelta
 from typing import Any, Dict, Optional
@@ -44,8 +47,23 @@ def _resolve_urls(cfg: ConnectorConfig, domain: Optional[str]) -> tuple:
     if not domain:
         raise OAuthError(f"{cfg.display_name} needs your {cfg.domain_label.lower()} first")
     # Accept either a bare subdomain or the full host the user is likely to paste.
-    host = domain.strip().lower().removeprefix("https://").removeprefix("http://").rstrip("/")
+    host = domain.strip().lower().removeprefix("https://").removeprefix("http://").split("/")[0]
+    if cfg.domain_suffix and "." not in host:
+        host += cfg.domain_suffix  # bare "acme" -> "acme.zendesk.com"
     return cfg.authorize_url.format(domain=host), cfg.token_url.format(domain=host)
+
+
+def resolve_redirect_uri(client_redirect_uri: str) -> str:
+    """The redirect URI sent to providers. CONNECTOR_REDIRECT_URI (e.g. https://iema.ai/connectors/oauth-callback)
+    pins it server-side; when unset, the browser's own origin + /connectors/oauth-callback is used, which is
+    what lets one backend serve both localhost:5174 and the production domain (both registered at providers)."""
+    return os.environ.get("CONNECTOR_REDIRECT_URI", "").strip() or client_redirect_uri
+
+
+def _pkce_pair() -> tuple:
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    return verifier, challenge
 
 
 async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str, domain: Optional[str] = None) -> str:
@@ -62,8 +80,11 @@ async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str
     # it doesn't weaken the CSRF check below, which still requires the full
     # string to match this exact stored doc's user_id + connector_id.
     state = f"{connector_id}::{secrets.token_urlsafe(24)}"
+    redirect_uri = resolve_redirect_uri(redirect_uri)
+    verifier, challenge = _pkce_pair() if cfg.pkce else (None, None)
     await mcp_oauth_states_col.insert_one({
         "state": state,
+        "code_verifier": verifier,
         "user_id": user_id,
         "connector_id": connector_id,
         "domain": domain,  # re-read at exchange_code time to resolve the same per-store token_url
@@ -74,8 +95,9 @@ async def build_authorize_url(user_id: str, connector_id: str, redirect_uri: str
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "state": state,
-        **({"scope": " ".join(cfg.scopes)} if cfg.scopes else {}),
+        **({"scope": cfg.scope_sep.join(cfg.effective_scopes())} if cfg.effective_scopes() else {}),
         **cfg.extra_authorize_params,
+        **({"code_challenge": challenge, "code_challenge_method": "S256"} if challenge else {}),
     }
     return f"{authorize_url}?{urlencode(params)}"
 
@@ -148,13 +170,18 @@ async def exchange_code(user_id: str, connector_id: str, code: str, redirect_uri
     cfg = _connector_or_raise(connector_id)
     state_doc = await _consume_state(user_id, connector_id, state)
     _, token_url = _resolve_urls(cfg, state_doc.get("domain"))
+    fields = {
+        "code": code,
+        "redirect_uri": resolve_redirect_uri(redirect_uri),
+        "grant_type": "authorization_code",
+    }
+    if cfg.token_send_scope:
+        fields["scope"] = " ".join(cfg.effective_scopes())
+    if state_doc.get("code_verifier"):
+        fields["code_verifier"] = state_doc["code_verifier"]
 
     async with httpx.AsyncClient(timeout=15) as http:
-        res = await _post_token(http, cfg, token_url, {
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        })
+        res = await _post_token(http, cfg, token_url, fields)
     if res.status_code != 200:
         logger.error(f"{connector_id} token exchange failed: {res.text}")
         raise OAuthError(f"{cfg.display_name} authorization failed — try connecting again")
@@ -178,9 +205,11 @@ async def exchange_code(user_id: str, connector_id: str, code: str, redirect_uri
         "connector_id": connector_id,
         "credentials_enc": crypto_service.encrypt_json(creds),
         "token_expiry": expiry,
-        "scopes": cfg.scopes,
+        "scopes": cfg.effective_scopes(),
         "updated_at": now_iso(),
     }
+    if tokens.get("instance_url"):  # Salesforce: the org's API host
+        update["instance_url"] = tokens["instance_url"]
     if cfg.requires_domain:
         update["domain"] = state_doc.get("domain")
     await mcp_connections_col.update_one(
@@ -212,6 +241,7 @@ async def get_valid_access_token(user_id: str, connector_id: str) -> str:
         raise OAuthError(f"{cfg.display_name} connection expired — please reconnect")
 
     _, token_url = _resolve_urls(cfg, conn.get("domain"))
+    token_url = cfg.token_refresh_url or token_url
     async with httpx.AsyncClient(timeout=15) as http:
         res = await _post_token(http, cfg, token_url, {
             "refresh_token": refresh_token,
@@ -232,6 +262,12 @@ async def get_valid_access_token(user_id: str, connector_id: str) -> str:
         {"$set": {"credentials_enc": crypto_service.encrypt_json(new_creds), "token_expiry": new_expiry, "updated_at": now_iso()}},
     )
     return access_token
+
+
+async def get_connection_extras(user_id: str, connector_id: str) -> Dict[str, str]:
+    """Non-secret per-connection values (store/subdomain, Salesforce instance_url) for REST base URLs."""
+    conn = await mcp_connections_col.find_one({"user_id": user_id, "connector_id": connector_id}) or {}
+    return {k: conn[k] for k in ("domain", "instance_url") if conn.get(k)}
 
 
 async def get_connection_status(user_id: str, connector_id: str) -> Optional[Dict[str, Any]]:

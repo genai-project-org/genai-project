@@ -1,4 +1,4 @@
-"""In-house MCP server over the Asana REST API (personal access token in ASANA_ACCESS_TOKEN)."""
+"""In-house MCP server over the Asana REST API (OAuth or personal access token in ASANA_ACCESS_TOKEN)."""
 import os
 
 from mcp.server.fastmcp import FastMCP

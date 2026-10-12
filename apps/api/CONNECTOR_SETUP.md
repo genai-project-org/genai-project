@@ -1,94 +1,101 @@
 # Connector Setup Handbook
 
-How to register each of the 52 connectors in `services/mcp/registry.py` and get real credentials into this app. Read this section before touching anything below.
+How the 52 connectors in `services/mcp/registry.py` get real credentials. The **env var table below is the source of truth**; the per-provider sections after the table are registration notes written earlier (their status emoji may lag the table).
 
 ## Three kinds of connector
 
-**OAuth2** (the default, and the only one most users will ever see) — the user clicks "Connect", a popup opens to the provider's own login/approve screen, and the popup closes itself once they approve — the main app never navigates away. This needs *you* (the operator) to register one OAuth app per provider in that provider's developer dashboard, once, and put its **Client ID / Client Secret into `apps/api/.env`** (never per-user — one app serves everyone). The exact env var names are given per-connector below and already have empty placeholders in `.env`. A few of these (Shopify) are *per-store* OAuth — the popup asks the user for their store domain first (not a secret, just which host to send them to), then proceeds exactly the same way.
+**OAuth2** (default) - the user flips the toggle on the Connectors page, a popup opens to the provider's login/approve screen, and the popup closes itself. You register one OAuth app per provider once and put its Client ID / Secret in `apps/api/.env`; the same app serves every user. A connector is only switchable when both values are set (`/mcp/connectors` reports `configured`); otherwise its row shows a disabled toggle with a "Coming soon" tooltip. Zendesk and Shopify are per-account OAuth: the user is first asked for their subdomain / store domain.
 
-**redirect_token** (Trello only) — not standard OAuth2 (no client secret, no server-side code exchange), but still a pure click-Connect-and-approve popup from the user's side: Trello hands back the per-user token directly in the redirect, nothing typed or copied. You register one public Trello API key (not secret) in `.env`.
+**redirect_token** (Trello only) - no client secret and no code exchange; Trello returns the per-user token in the redirect. Only the public `TRELLO_API_KEY` is needed. Add every origin you serve the app from (e.g. `http://localhost:5174`, `https://iema.ai`) under "Allowed origins" for that key at trello.com/power-ups/admin.
 
-**API key** — a small number of providers (Telegram, Twilio, Freshdesk, SendGrid, CircleCI, Vercel, AWS) genuinely have no OAuth consent flow for this use case — confirmed per-provider, not a shortcut we took. For these, and only these, the Connect button opens a small dialog asking the user to paste a value they copy from that provider's own dashboard. There is **nothing to put in `.env`** for these — each user's value is stored encrypted per-user. The Connectors page labels these cards "API key" so it's never ambiguous which ones work differently. (Linear, Asana and Airtable are also API-key connectors now: a personal key/token is the simplest path and needs no OAuth app.)
+**API key** (Telegram, Twilio, WhatsApp Business, Vercel, AWS, CircleCI, Freshdesk, SendGrid, PayPal) - the provider has no per-user consent flow, so the toggle opens a dialog where the user pastes a key. Nothing goes in `.env`; each user's value is stored encrypted per user. (Asana, Linear and Airtable are OAuth now, not API key.)
 
 ## Redirect URI
 
-Every OAuth2 (and redirect_token) connector below needs your redirect URI registered on the provider's side (for providers that require exact pre-registration — Trello's flow doesn't). Use:
+Register these exact redirect URIs at every OAuth provider (Trello: allowed origins instead):
+
 - Local dev: `http://localhost:5174/connectors/oauth-callback`
-- Production: `https://<your-domain>/connectors/oauth-callback`
+- Production: `https://iema.ai/connectors/oauth-callback`
 
-A few providers have quirks (HTTPS-only, no localhost, etc.) — called out per connector below.
+The web app always sends `<its own origin>/connectors/oauth-callback`, so one backend serves both. Optional `CONNECTOR_REDIRECT_URI` in `.env` pins it server-side (it then overrides what the browser sends for both the authorize and the token-exchange step). Do not use `APP_URL` for this: it is the API host. `NOTION_AUTHORIZATION_URL` in `.env` is unused; the authorize URL is built in code from `NOTION_CLIENT_ID` and the redirect URI above.
 
-## Status: live vs coming soon
+Quirks worth knowing before you test:
+- Google: the redirect URI must be listed on the OAuth client, and the consent screen must list the Docs/Sheets/Drive/Analytics/cloud-platform scopes (or the account must be a test user).
+- Atlassian: enable the Jira and Confluence scopes under Permissions, and add the callback URL under Authorization. One app serves both connectors.
+- Microsoft: three Entra apps (`MS_GRAPH_*` for OneDrive/SharePoint/Azure, `MS_OUTLOOK_*`, `MS_TEAMS_*`). Each needs the Web redirect URI and the delegated permissions in the connector's scope list; Azure additionally needs "Azure Service Management / user_impersonation" on the Graph app.
+- Dropbox, Zoom, GitLab, monday and Asana: scopes are taken from the app configuration. Dropbox/Zoom/monday/Asana send no `scope`; GitLab sends `api read_user`. To change scopes without code, set `<CONNECTOR_ID>_SCOPES` (space or comma separated), e.g. `GITLAB_SCOPES=read_api read_user`.
+- Airtable requires PKCE (implemented) and Basic client auth (implemented); Salesforce external client apps also expect PKCE (sent).
+- Salesforce authorizes against `login.salesforce.com` (production/developer orgs); sandboxes need `test.salesforce.com`.
+- LinkedIn uses its own `LINKEDIN_MCP_CLIENT_ID/SECRET`, separate from the sign-in app's `LINKEDIN_CLIENT_ID/SECRET`.
 
-Every connector appears on the Connectors page. The page never shows an error for a connector whose credentials are not configured yet: it shows **Available** (and a friendly "being switched on" dialog if the operator has not added the OAuth app yet) or **Coming soon** (no tool server built yet). Credentials are driven purely by env vars (below) — paste them into `apps/api/.env`, restart the API, and **Connect** starts working with no code change.
+## Status at launch
 
-**Demo-ready connectors** (own tool servers in `services/mcp/servers/`, exercised through the Workspace orchestrator): Gmail, Google Calendar, Slack, GitHub, Notion, Linear, Asana, Airtable, Trello. Linear, Asana and Airtable use a personal API key/token the user pastes (nothing in `.env`); Trello needs only the public `TRELLO_API_KEY`.
+Credentials present: Asana, Atlassian (Jira + Confluence), GitHub, Google (Calendar, Gmail, Docs, Sheets, Drive, GCP, Analytics), Intercom, Linear, monday, Notion, Sentry, Slack, Airtable, Basecamp, Bitbucket, Discord, Dropbox, GitLab, Microsoft (OneDrive, SharePoint, Azure, Outlook, Teams), Salesforce, Trello, Zendesk, Zoom, plus the nine API-key connectors.
 
-| Status | Count |
-|---|---|
-| Live | 15 (9 with in-house tool servers, 6 more point at hosted MCP endpoints and are not verified) |
-| Coming soon | 37 |
+Coming soon (no credentials yet): HubSpot, DocuSign, LinkedIn, Mailchimp, QuickBooks, Reddit, Shopify, Stripe, X, Box, ClickUp. Fill the vars below, restart the API, and the toggle works with no code change.
 
-Set `MCP_DEMO_MODE=1` to hide raw provider error text from the Workspace timeline's "Raw details" (the friendly one-line message is always shown).
+How @mention / prompts reach each connector (`Tool access` column): **Own tool server** (`services/mcp/servers/*`: Gmail, Calendar, Slack, GitHub, Notion, Linear, Asana, Airtable, Trello), **Hosted MCP** (monday, Intercom, HubSpot, called with the user's OAuth token as a bearer; not verified end to end), **Generic REST tools** (`servers/rest_server.py`: `api_get/api_post/api_put/api_patch/api_delete` locked to the provider's API hosts, token never sent elsewhere, deletes need user confirmation; used for Google Docs/Sheets/Drive/GCP/Analytics, Microsoft, Atlassian, Sentry, Dropbox, GitLab, Bitbucket, Zoom, Basecamp, Zendesk, Salesforce, Discord). Connectors listed as "No tool server" can be connected but the assistant reports that actions are not available yet. Discord has only a user token (profile and server list); message actions would need a bot token.
+
+Set `MCP_DEMO_MODE=1` to hide raw provider error text in the Workspace timeline.
 
 ## Env var reference (all connectors)
 
-Redirect URI to register at every OAuth provider: `http://localhost:5174/connectors/oauth-callback` (dev) or `https://<your-domain>/connectors/oauth-callback` (prod). Google connectors (Gmail, Calendar, Docs, Sheets, Drive, Analytics, GCP) share `GOOGLE_CLIENT_ID/SECRET`; Microsoft ones share `MS_GRAPH_CLIENT_ID/SECRET`; Confluence and Jira share `ATLASSIAN_CLIENT_ID/SECRET`.
+Google connectors share `GOOGLE_CLIENT_ID/SECRET`; OneDrive, SharePoint and Azure share `MS_GRAPH_CLIENT_ID/SECRET`; Jira and Confluence share `ATLASSIAN_CLIENT_ID/SECRET`.
 
-| Connector | Category | Auth | Actions | Env vars in `apps/api/.env` |
+| Connector | Category | Auth | Tool access | Env vars in `apps/api/.env` |
 |---|---|---|---|---|
-| Google Analytics | Analytics | OAuth2 | Coming soon | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| DocuSign | CRM & Support | OAuth2 | Coming soon | `DOCUSIGN_CLIENT_ID`, `DOCUSIGN_CLIENT_SECRET` |
-| Freshdesk | CRM & Support | API key | Coming soon | _none — each user pastes: `api_key`, `domain`_ |
-| HubSpot | CRM & Support | OAuth2 | Hosted MCP (not verified) | `HUBSPOT_CLIENT_ID`, `HUBSPOT_CLIENT_SECRET` |
-| Intercom | CRM & Support | OAuth2 | Hosted MCP (not verified) | `INTERCOM_CLIENT_ID`, `INTERCOM_CLIENT_SECRET` |
-| Mailchimp | CRM & Support | OAuth2 | Coming soon | `MAILCHIMP_CLIENT_ID`, `MAILCHIMP_CLIENT_SECRET` |
-| Salesforce | CRM & Support | OAuth2 | Coming soon | `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
-| SendGrid | CRM & Support | API key | Coming soon | _none — each user pastes: `api_key`_ |
-| Zendesk | CRM & Support | OAuth2 | Coming soon | `ZENDESK_CLIENT_ID`, `ZENDESK_CLIENT_SECRET` |
-| Google Calendar | Calendar & Scheduling | OAuth2 | Live (own tool server) | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| PayPal | Commerce & Finance | API key | Coming soon | _none — each user pastes: `client_id`, `client_secret`, `mode`_ |
-| QuickBooks (Intuit) | Commerce & Finance | OAuth2 | Coming soon | `QUICKBOOKS_CLIENT_ID`, `QUICKBOOKS_CLIENT_SECRET` |
-| Shopify | Commerce & Finance | OAuth2 | Coming soon | `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` |
-| Stripe | Commerce & Finance | OAuth2 | Coming soon | `STRIPE_CONNECT_CLIENT_ID`, `STRIPE_CONNECT_CLIENT_SECRET` |
-| Discord | Communication | OAuth2 | Coming soon | `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` |
-| Gmail | Communication | OAuth2 | Live (own tool server) | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| Microsoft Outlook (Mail) | Communication | OAuth2 | Coming soon | `MS_OUTLOOK_CLIENT_ID`, `MS_OUTLOOK_CLIENT_SECRET` |
-| Microsoft Teams | Communication | OAuth2 | Coming soon | `MS_TEAMS_CLIENT_ID`, `MS_TEAMS_CLIENT_SECRET` |
-| Slack | Communication | OAuth2 | Live (own tool server) | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` |
-| Telegram | Communication | API key | Coming soon | _none — each user pastes: `bot_token`_ |
-| Twilio | Communication | API key | Coming soon | _none — each user pastes: `account_sid`, `api_key_sid`, `api_key_secret`_ |
-| WhatsApp Business | Communication | API key | Coming soon | _none — each user pastes: `system_user_access_token`, `phone_number_id`, `whatsapp_business_account_id`_ |
-| Zoom | Communication | OAuth2 | Coming soon | `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` |
-| Amazon Web Services | Developer Tools | API key | Coming soon | _none — each user pastes: `access_key_id`, `secret_access_key`, `region`_ |
-| Bitbucket | Developer Tools | OAuth2 | Coming soon | `BITBUCKET_CLIENT_ID`, `BITBUCKET_CLIENT_SECRET` |
-| CircleCI | Developer Tools | API key | Coming soon | _none — each user pastes: `api_token`_ |
-| GitHub | Developer Tools | OAuth2 | Live (own tool server) | `GITHUB_MCP_CLIENT_ID`, `GITHUB_MCP_CLIENT_SECRET` |
-| GitLab | Developer Tools | OAuth2 | Coming soon | `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET` |
-| Google Cloud Platform | Developer Tools | OAuth2 | Coming soon | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| Microsoft Azure | Developer Tools | OAuth2 | Coming soon | `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET` |
-| Sentry | Developer Tools | OAuth2 | Hosted MCP (not verified) | `SENTRY_CLIENT_ID`, `SENTRY_CLIENT_SECRET` |
-| Vercel | Developer Tools | API key | Coming soon | _none — each user pastes: `access_token`_ |
-| Atlassian Confluence | Productivity & Docs | OAuth2 | Hosted MCP (not verified) | `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET` |
-| Box | Productivity & Docs | OAuth2 | Coming soon | `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET` |
-| Dropbox | Productivity & Docs | OAuth2 | Coming soon | `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET` |
-| Google Docs | Productivity & Docs | OAuth2 | Coming soon | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| Google Drive | Productivity & Docs | OAuth2 | Coming soon | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| Google Sheets | Productivity & Docs | OAuth2 | Coming soon | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| Microsoft OneDrive | Productivity & Docs | OAuth2 | Coming soon | `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET` |
-| Microsoft SharePoint | Productivity & Docs | OAuth2 | Coming soon | `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET` |
-| Notion | Productivity & Docs | OAuth2 | Live (own tool server) | `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` |
-| Airtable | Project Management | API key | Live (own tool server) | _none — each user pastes: `access_token`_ |
-| Asana | Project Management | API key | Live (own tool server) | _none — each user pastes: `access_token`_ |
-| Atlassian Jira | Project Management | OAuth2 | Hosted MCP (not verified) | `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET` |
-| Basecamp | Project Management | OAuth2 | Coming soon | `BASECAMP_CLIENT_ID`, `BASECAMP_CLIENT_SECRET` |
-| ClickUp | Project Management | OAuth2 | Coming soon | `CLICKUP_CLIENT_ID`, `CLICKUP_CLIENT_SECRET` |
-| Linear | Project Management | API key | Live (own tool server) | _none — each user pastes: `api_key`_ |
-| Trello | Project Management | Redirect token | Live (own tool server) | `TRELLO_API_KEY` (public key, no secret) |
-| monday.com | Project Management | OAuth2 | Hosted MCP (not verified) | `MONDAY_CLIENT_ID`, `MONDAY_CLIENT_SECRET` |
-| LinkedIn | Social Media | OAuth2 | Coming soon | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` |
-| Reddit | Social Media | OAuth2 | Coming soon | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` |
-| Twitter/X | Social Media | OAuth2 | Coming soon | `X_CLIENT_ID`, `X_CLIENT_SECRET` |
+| Google Analytics | Analytics | OAuth2 | Generic REST tools | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| DocuSign | CRM & Support | OAuth2 | No tool server | `DOCUSIGN_CLIENT_ID`, `DOCUSIGN_CLIENT_SECRET` |
+| Freshdesk | CRM & Support | API key | No tool server | _none — each user pastes: `api_key`, `domain`_ |
+| HubSpot | CRM & Support | OAuth2 | Hosted MCP | `HUBSPOT_CLIENT_ID`, `HUBSPOT_CLIENT_SECRET` |
+| Intercom | CRM & Support | OAuth2 | Hosted MCP | `INTERCOM_CLIENT_ID`, `INTERCOM_CLIENT_SECRET` |
+| Mailchimp | CRM & Support | OAuth2 | No tool server | `MAILCHIMP_CLIENT_ID`, `MAILCHIMP_CLIENT_SECRET` |
+| Salesforce | CRM & Support | OAuth2 | Generic REST tools | `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
+| SendGrid | CRM & Support | API key | No tool server | _none — each user pastes: `api_key`_ |
+| Zendesk | CRM & Support | OAuth2 | Generic REST tools | `ZENDESK_CLIENT_ID`, `ZENDESK_CLIENT_SECRET` |
+| Google Calendar | Calendar & Scheduling | OAuth2 | Own tool server | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| PayPal | Commerce & Finance | API key | No tool server | _none — each user pastes: `client_id`, `client_secret`, `mode`_ |
+| QuickBooks (Intuit) | Commerce & Finance | OAuth2 | No tool server | `QUICKBOOKS_CLIENT_ID`, `QUICKBOOKS_CLIENT_SECRET` |
+| Shopify | Commerce & Finance | OAuth2 | No tool server | `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` |
+| Stripe | Commerce & Finance | OAuth2 | No tool server | `STRIPE_CONNECT_CLIENT_ID`, `STRIPE_CONNECT_CLIENT_SECRET` |
+| Discord | Communication | OAuth2 | Generic REST tools | `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` |
+| Gmail | Communication | OAuth2 | Own tool server | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Microsoft Outlook (Mail) | Communication | OAuth2 | Generic REST tools | `MS_OUTLOOK_CLIENT_ID`, `MS_OUTLOOK_CLIENT_SECRET` |
+| Microsoft Teams | Communication | OAuth2 | Generic REST tools | `MS_TEAMS_CLIENT_ID`, `MS_TEAMS_CLIENT_SECRET` |
+| Slack | Communication | OAuth2 | Own tool server | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` |
+| Telegram | Communication | API key | No tool server | _none — each user pastes: `bot_token`_ |
+| Twilio | Communication | API key | No tool server | _none — each user pastes: `account_sid`, `api_key_sid`, `api_key_secret`_ |
+| WhatsApp Business | Communication | API key | No tool server | _none — each user pastes: `system_user_access_token`, `phone_number_id`, `whatsapp_business_account_id`_ |
+| Zoom | Communication | OAuth2 | Generic REST tools | `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` |
+| Amazon Web Services | Developer Tools | API key | No tool server | _none — each user pastes: `access_key_id`, `secret_access_key`, `region`_ |
+| Bitbucket | Developer Tools | OAuth2 | Generic REST tools | `BITBUCKET_CLIENT_ID`, `BITBUCKET_CLIENT_SECRET` |
+| CircleCI | Developer Tools | API key | No tool server | _none — each user pastes: `api_token`_ |
+| GitHub | Developer Tools | OAuth2 | Own tool server | `GITHUB_MCP_CLIENT_ID`, `GITHUB_MCP_CLIENT_SECRET` |
+| GitLab | Developer Tools | OAuth2 | Generic REST tools | `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET` |
+| Google Cloud Platform | Developer Tools | OAuth2 | Generic REST tools | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Microsoft Azure | Developer Tools | OAuth2 | Generic REST tools | `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET` |
+| Sentry | Developer Tools | OAuth2 | Generic REST tools | `SENTRY_CLIENT_ID`, `SENTRY_CLIENT_SECRET` |
+| Vercel | Developer Tools | API key | No tool server | _none — each user pastes: `access_token`_ |
+| Atlassian Confluence | Productivity & Docs | OAuth2 | Generic REST tools | `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET` |
+| Box | Productivity & Docs | OAuth2 | No tool server | `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET` |
+| Dropbox | Productivity & Docs | OAuth2 | Generic REST tools | `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET` |
+| Google Docs | Productivity & Docs | OAuth2 | Generic REST tools | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Google Drive | Productivity & Docs | OAuth2 | Generic REST tools | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Google Sheets | Productivity & Docs | OAuth2 | Generic REST tools | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Microsoft OneDrive | Productivity & Docs | OAuth2 | Generic REST tools | `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET` |
+| Microsoft SharePoint | Productivity & Docs | OAuth2 | Generic REST tools | `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET` |
+| Notion | Productivity & Docs | OAuth2 | Own tool server | `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` |
+| Airtable | Project Management | OAuth2 | Own tool server | `AIRTABLE_CLIENT_ID`, `AIRTABLE_CLIENT_SECRET` |
+| Asana | Project Management | OAuth2 | Own tool server | `ASANA_CLIENT_ID`, `ASANA_CLIENT_SECRET` |
+| Atlassian Jira | Project Management | OAuth2 | Generic REST tools | `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET` |
+| Basecamp | Project Management | OAuth2 | Generic REST tools | `BASECAMP_CLIENT_ID`, `BASECAMP_CLIENT_SECRET` |
+| ClickUp | Project Management | OAuth2 | No tool server | `CLICKUP_CLIENT_ID`, `CLICKUP_CLIENT_SECRET` |
+| Linear | Project Management | OAuth2 | Own tool server | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` |
+| Trello | Project Management | Redirect token | Own tool server | `TRELLO_API_KEY` (public key, no secret) |
+| monday.com | Project Management | OAuth2 | Hosted MCP | `MONDAY_CLIENT_ID`, `MONDAY_CLIENT_SECRET` |
+| LinkedIn | Social Media | OAuth2 | No tool server | `LINKEDIN_MCP_CLIENT_ID`, `LINKEDIN_MCP_CLIENT_SECRET` |
+| Reddit | Social Media | OAuth2 | No tool server | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` |
+| Twitter/X | Social Media | OAuth2 | No tool server | `X_CLIENT_ID`, `X_CLIENT_SECRET` |
 
 ---
 
@@ -213,12 +220,12 @@ List/read/upload/manage files/folders.
 
 ### Asana ✅ Ready
 Read/manage tasks and projects.
-- **User pastes**: a Personal Access Token from [app.asana.com/0/my-apps](https://app.asana.com/0/my-apps). Nothing in `.env`.
+- **OAuth2**: create the app at [app.asana.com/0/my-apps](https://app.asana.com/0/my-apps), set `ASANA_CLIENT_ID/SECRET`. Authorize `https://app.asana.com/-/oauth_authorize`, token `https://app.asana.com/-/oauth_token`.
 - Tool server: `services/mcp/servers/asana_server.py`.
 
 ### Linear ✅ Ready
 Read/manage issues and comments.
-- **User pastes**: a personal API key from [linear.app/settings/account/security](https://linear.app/settings/account/security). Nothing in `.env`.
+- **OAuth2**: app at [linear.app/settings/api](https://linear.app/settings/api), set `LINEAR_CLIENT_ID/SECRET`. Scopes `read,write` (comma separated). Token is sent as a Bearer token.
 - Tool server: `services/mcp/servers/linear_server.py` (GraphQL).
 
 ### Trello ✅ Ready
@@ -247,7 +254,7 @@ Read/manage to-dos, messages, schedule items.
 
 ### Airtable ✅ Ready
 Read/manage bases, tables, records.
-- **User pastes**: a personal access token from [airtable.com/create/tokens](https://airtable.com/create/tokens) (scopes `data.records:read`, `data.records:write`, `schema.bases:read`). Nothing in `.env`; this avoids the PKCE requirement of Airtable OAuth.
+- **OAuth2** with PKCE + Basic client auth (both implemented): set `AIRTABLE_CLIENT_ID/SECRET`, enable scopes `data.records:read`, `data.records:write`, `schema.bases:read` on the integration.
 - Tool server: `services/mcp/servers/airtable_server.py`.
 
 ---
