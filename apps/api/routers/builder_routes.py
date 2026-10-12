@@ -1,11 +1,13 @@
 """Code Builder routes — projects, refine, GitHub push, S3 share."""
 import os
 import uuid
+import secrets
 import base64
 import hashlib
 import logging
 from typing import List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from bson import ObjectId
 import httpx
@@ -84,9 +86,10 @@ class SaveFilesRequest(BaseModel):
 
 class GithubPushRequest(BaseModel):
     pat: Optional[str] = None  # If provided, is stored (encrypted). Otherwise reuses saved.
-    repo: str = Field(min_length=3, max_length=140)  # "owner/repo"
+    repo: str = Field(min_length=1, max_length=140)  # "name" or "owner/repo"
     commit_message: str = "IEMA.ai Builder push"
     save_pat: bool = True
+    private: bool = True
 
 
 # ---- helpers ------------------------------------------------------------
@@ -280,11 +283,9 @@ async def preview(project_id: str, user: User = Depends(get_current_user)):
 
 
 @router.post("/projects/{project_id}/share")
-async def share_project(project_id: str, req: ShareRequest = ShareRequest(),
+async def share_project(project_id: str, request: Request, req: ShareRequest = ShareRequest(),
                         user: User = Depends(get_current_user)):
     """Publish preview HTML to S3 and return a shareable signed URL (7-day)."""
-    if not is_configured():
-        raise HTTPException(500, "Storage not configured")
     doc = await _load_project(user.id, project_id)
     if doc.get("kind", "static") == "static":
         html = compose_preview_html(doc.get("files", []))
@@ -292,6 +293,16 @@ async def share_project(project_id: str, req: ShareRequest = ShareRequest(),
         if not req.html:
             raise HTTPException(400, "Dynamic projects must send the bundled `html` to share.")
         html = req.html
+    if not is_configured():
+        # No S3 bucket: keep the shared page in Mongo and serve it from /builder/shared/{token}.
+        token = doc.get("share_token") or secrets.token_urlsafe(12)
+        await builder_projects_col.update_one(
+            {"_id": ObjectId(project_id)},
+            {"$set": {"share_token": token, "share_html": html, "updated_at": now_iso()}},
+        )
+        origin = str(request.headers.get("origin") or "").rstrip("/") or os.environ.get("APP_URL", "").rstrip("/")
+        await log_event("builder_share", user_id=user.id, payload={"project_id": project_id, "store": "db"})
+        return {"share_url": f"{origin}/api/builder/shared/{token}"}
     key = doc.get("share_key")
     if not key:
         key = await upload_bytes(html.encode("utf-8"), f"builder-{uuid.uuid4().hex}.html", "text/html", folder=f"builder/{user.id}")
@@ -308,52 +319,85 @@ async def share_project(project_id: str, req: ShareRequest = ShareRequest(),
     return {"share_url": url}
 
 
+@router.get("/shared/{token}", include_in_schema=False)
+async def shared_page(token: str):
+    """Public view of a shared build. Served in a CSP sandbox (scripts allowed, no same-origin
+    access) so generated code can never read the viewer's IEMA.ai session."""
+    doc = await builder_projects_col.find_one({"share_token": token}, {"share_html": 1})
+    if not doc or not doc.get("share_html"):
+        raise HTTPException(404, "Shared page not found")
+    return HTMLResponse(
+        doc["share_html"],
+        headers={"Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals",
+                 "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+    )
+
+
+async def _github_token(user_id: str) -> Optional[str]:
+    """OAuth token from the user's GitHub connector (preferred); falls back to a PAT saved earlier."""
+    from services.mcp.oauth_service import get_valid_access_token
+    try:
+        return await get_valid_access_token(user_id, "github")
+    except Exception:
+        pass
+    from db import users_col
+    u = await users_col.find_one({"_id": ObjectId(user_id)}, {"github_pat": 1})
+    enc = (u or {}).get("github_pat")
+    if enc:
+        try:
+            return _decrypt(enc)
+        except Exception:
+            return None
+    return None
+
+
+_GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "iema-ai-builder"}
+
+
 @router.post("/projects/{project_id}/github/push")
 async def github_push(project_id: str, req: GithubPushRequest, user: User = Depends(get_current_user)):
-    """Push all project files to GitHub. PAT may be supplied per-call and saved encrypted per user."""
+    """Push all project files to GitHub using the user's connected GitHub account (OAuth).
+    `repo` may be a bare name (created under the user's account if missing) or `owner/repo`."""
     doc = await _load_project(user.id, project_id)
-    # Resolve PAT
-    pat = req.pat
-    if not pat:
-        # Load from user record
-        from db import users_col
-        u = await users_col.find_one({"_id": ObjectId(user.id)}, {"github_pat": 1})
-        enc = (u or {}).get("github_pat")
-        if not enc:
-            raise HTTPException(400, "No GitHub PAT saved. Provide one in `pat` and set save_pat=true.")
-        try:
-            pat = _decrypt(enc)
-        except Exception:
-            raise HTTPException(400, "Stored PAT could not be decrypted. Please re-enter.")
+    token = await _github_token(user.id)
+    if not token:
+        raise HTTPException(400, "Connect your GitHub account first.")
+    headers = {**_GH_HEADERS, "Authorization": f"Bearer {token}"}
+    repo_in = (req.repo or "").strip().strip("/")
+    if not repo_in:
+        raise HTTPException(400, "Enter a repository name.")
 
-    if req.save_pat and req.pat:
-        # Validate PAT lightly before persisting so /github/status never lies.
-        async with httpx.AsyncClient(timeout=10) as http_check:
-            r_check = await http_check.get(
-                "https://api.github.com/user",
-                headers={"Authorization": f"Bearer {req.pat}", "Accept": "application/vnd.github+json",
-                         "User-Agent": "iema-ai-builder"},
-            )
-            if r_check.status_code == 200:
-                from db import users_col
-                await users_col.update_one(
-                    {"_id": ObjectId(user.id)},
-                    {"$set": {"github_pat": _encrypt(req.pat)}},
-                )
-            else:
-                raise HTTPException(400, f"GitHub rejected PAT ({r_check.status_code}). Not saved.")
-
-    if "/" not in req.repo:
-        raise HTTPException(400, "repo must be in `owner/repo` form")
-
-    headers = {"Authorization": f"Bearer {pat}", "Accept": "application/vnd.github+json", "User-Agent": "iema-ai-builder"}
     pushed = []
     errors = []
+    created = False
     async with httpx.AsyncClient(timeout=30, headers=headers) as http:
+        if "/" in repo_in:
+            repo = repo_in
+        else:
+            me = await http.get("https://api.github.com/user")
+            if me.status_code != 200:
+                raise HTTPException(400, "GitHub connection is not valid anymore. Please reconnect GitHub.")
+            repo = f"{me.json()['login']}/{repo_in}"
+        chk = await http.get(f"https://api.github.com/repos/{repo}")
+        if chk.status_code == 404:
+            owner, name = repo.split("/", 1)
+            me = await http.get("https://api.github.com/user")
+            if me.status_code == 200 and me.json().get("login", "").lower() == owner.lower():
+                mk = await http.post("https://api.github.com/user/repos",
+                                     json={"name": name, "private": bool(req.private),
+                                           "description": f"Built with IEMA.ai: {doc.get('name', '')}"[:200]})
+            else:
+                mk = await http.post(f"https://api.github.com/orgs/{owner}/repos",
+                                     json={"name": name, "private": bool(req.private)})
+            if mk.status_code not in (200, 201):
+                raise HTTPException(400, f"Could not create repository: {mk.status_code} {mk.text[:140]}")
+            created = True
+        elif chk.status_code != 200:
+            raise HTTPException(400, f"GitHub says {chk.status_code} for {repo}. Check the repository name and your access.")
+
         for f in doc.get("files", []):
             path = f["path"].lstrip("/")
-            api_url = f"https://api.github.com/repos/{req.repo}/contents/{path}"
-            # Look up existing sha
+            api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
             sha = None
             r = await http.get(api_url)
             if r.status_code == 200:
@@ -375,23 +419,34 @@ async def github_push(project_id: str, req: GithubPushRequest, user: User = Depe
 
     await builder_projects_col.update_one(
         {"_id": ObjectId(project_id)},
-        {"$set": {"github": {"repo": req.repo, "last_pushed_at": now_iso()}, "updated_at": now_iso()}},
+        {"$set": {"github": {"repo": repo, "last_pushed_at": now_iso()}, "updated_at": now_iso()}},
     )
     await log_event("builder_github_push", user_id=user.id,
-                    payload={"project_id": project_id, "repo": req.repo,
+                    payload={"project_id": project_id, "repo": repo, "created": created,
                              "pushed": len(pushed), "errors": len(errors)})
-    return {"pushed": pushed, "errors": errors, "repo_url": f"https://github.com/{req.repo}"}
+    return {"pushed": pushed, "errors": errors, "repo": repo, "created": created,
+            "repo_url": f"https://github.com/{repo}"}
 
 
 @router.get("/github/status")
 async def github_status(user: User = Depends(get_current_user)):
-    from db import users_col
-    u = await users_col.find_one({"_id": ObjectId(user.id)}, {"github_pat": 1})
-    return {"connected": bool((u or {}).get("github_pat"))}
+    token = await _github_token(user.id)
+    if not token:
+        return {"connected": False}
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            r = await http.get("https://api.github.com/user", headers={**_GH_HEADERS, "Authorization": f"Bearer {token}"})
+        if r.status_code == 200:
+            return {"connected": True, "login": r.json().get("login")}
+    except Exception:
+        pass
+    return {"connected": False}
 
 
 @router.delete("/github/disconnect")
 async def github_disconnect(user: User = Depends(get_current_user)):
     from db import users_col
+    from services.mcp.oauth_service import mcp_connections_col
     await users_col.update_one({"_id": ObjectId(user.id)}, {"$unset": {"github_pat": ""}})
+    await mcp_connections_col.delete_one({"user_id": user.id, "connector_id": "github"})
     return {"ok": True}

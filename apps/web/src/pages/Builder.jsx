@@ -318,30 +318,70 @@ function CreateDialog({ open, onOpenChange, onCreated, kind = 'static', copy = C
 }
 
 function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
-  const [pat, setPat] = useState('');
   const [repo, setRepo] = useState('');
+  const [isPrivate, setIsPrivate] = useState(true);
   const [commit, setCommit] = useState('IEMA.ai Builder push');
   const [loading, setLoading] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [login, setLogin] = useState('');
   const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    api.get('/builder/github/status').then(({ data }) => setLogin(data.login || '')).catch(() => {});
+    if (project && !repo) setRepo((project.name || 'iema-project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60));
+  }, [open, connected]);
+
+  useEffect(() => {
+    // The OAuth popup (ConnectorOAuthCallback) posts the code back to this window.
+    const onMessage = async (ev) => {
+      if (ev.origin !== window.location.origin || ev.data?.source !== 'mcp-oauth') return;
+      const data = ev.data;
+      if (data.error || !data.code) { toast.error(data.error || 'GitHub connection was cancelled'); setConnecting(false); return; }
+      try {
+        const redirect_uri = `${window.location.origin}/connectors/oauth-callback`;
+        await api.post('/mcp/callback/github', { code: data.code, state: data.state, redirect_uri });
+        toast.success('GitHub connected');
+        onDone && onDone();
+      } catch (e) { toast.error(e.response?.data?.detail || 'GitHub connection failed'); }
+      finally { setConnecting(false); }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  const connectGithub = async () => {
+    setConnecting(true);
+    try {
+      const redirect_uri = `${window.location.origin}/connectors/oauth-callback`;
+      const { data } = await api.get('/mcp/connect/github', { params: { redirect_uri } });
+      const popup = window.open(data.authorize_url, 'mcp-oauth', 'width=520,height=700');
+      if (!popup) { toast.error('Pop-up blocked. Allow pop-ups for this site and try again.'); setConnecting(false); return; }
+      const t = setInterval(() => { if (popup.closed) { clearInterval(t); setConnecting(false); } }, 600);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'GitHub is not available right now');
+      setConnecting(false);
+    }
+  };
 
   const submit = async () => {
     if (!project) return;
-    if (!repo.includes('/')) return toast.error('Repo must be `owner/repo`');
+    if (!repo.trim()) return toast.error('Enter a repository name');
     setLoading(true); setResult(null);
     try {
-      const body = { repo, commit_message: commit, save_pat: true };
-      if (pat.trim()) body.pat = pat.trim();
-      const { data } = await api.post(`/builder/projects/${project.id}/github/push`, body);
+      const { data } = await api.post(`/builder/projects/${project.id}/github/push`,
+        { repo: repo.trim(), commit_message: commit, private: isPrivate });
       setResult(data);
-      toast.success(`Pushed ${data.pushed.length} files`);
+      toast.success(data.created ? `Created ${data.repo} and pushed ${data.pushed.length} files` : `Pushed ${data.pushed.length} files`);
       onDone && onDone();
     } catch (e) { toast.error(e.response?.data?.detail || 'Push failed'); }
     finally { setLoading(false); }
   };
   const disconnect = async () => {
     await api.delete('/builder/github/disconnect');
+    setLogin('');
     onDone && onDone();
-    toast.success('Disconnected');
+    toast.success('GitHub disconnected');
   };
 
   return (
@@ -350,28 +390,45 @@ function GithubDialog({ open, onOpenChange, project, connected, onDone }) {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Github className="h-4 w-4" /> Push to GitHub</DialogTitle>
           <DialogDescription>
-            {connected ? 'PAT is stored (encrypted). Leave blank to reuse.' : 'Paste a GitHub PAT with repo scope. Stored encrypted.'}
+            {connected ? `Connected${login ? ` as @${login}` : ''}. Pick a repository name; it is created if it does not exist.`
+                       : 'Connect your GitHub account with one click. No tokens to copy.'}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <Input placeholder="Personal Access Token (github.com/settings/tokens)" value={pat} onChange={(e) => setPat(e.target.value)} type="password" data-testid="builder-github-pat" />
-          <Input placeholder="owner/repo (must exist, empty is OK)" value={repo} onChange={(e) => setRepo(e.target.value)} data-testid="builder-github-repo" />
-          <Input placeholder="Commit message" value={commit} onChange={(e) => setCommit(e.target.value)} />
-          {connected && <Button variant="ghost" size="sm" onClick={disconnect} className="text-destructive">Disconnect saved PAT</Button>}
-          {result && (
-            <div className="rounded-md bg-primary/5 border border-primary/20 p-3 text-xs">
-              <div>Pushed: {result.pushed.length} files</div>
-              {result.errors.length > 0 && <div className="text-destructive">Errors: {result.errors.length}</div>}
-              <a href={result.repo_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{result.repo_url}</a>
+        {!connected ? (
+          <div className="py-2">
+            <Button onClick={connectGithub} disabled={connecting} className="w-full gap-2" data-testid="builder-github-connect">
+              {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
+              Connect GitHub
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              {login && <span className="text-sm text-muted-foreground shrink-0">{login} /</span>}
+              <Input placeholder="repository-name" value={repo} onChange={(e) => setRepo(e.target.value)} data-testid="builder-github-repo" />
             </div>
-          )}
-        </div>
-        <DialogFooter>
-          <Button onClick={submit} disabled={loading || !repo.includes('/')} data-testid="builder-github-push-btn">
-            {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Github className="h-4 w-4 mr-2" />}
-            Push
-          </Button>
-        </DialogFooter>
+            <Input placeholder="Commit message" value={commit} onChange={(e) => setCommit(e.target.value)} />
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} /> Private repository (when created)
+            </label>
+            {result && (
+              <div className="rounded-md bg-primary/5 border border-primary/20 p-3 text-xs">
+                <div>{result.created ? 'Repository created. ' : ''}Pushed: {result.pushed.length} files</div>
+                {result.errors.length > 0 && <div className="text-destructive">Errors: {result.errors.length}</div>}
+                <a href={result.repo_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{result.repo_url}</a>
+              </div>
+            )}
+            <button onClick={disconnect} className="text-xs text-muted-foreground hover:text-destructive underline">Disconnect GitHub</button>
+          </div>
+        )}
+        {connected && (
+          <DialogFooter>
+            <Button onClick={submit} disabled={loading || !repo.trim()} data-testid="builder-github-push-btn">
+              {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Github className="h-4 w-4 mr-2" />}
+              Push
+            </Button>
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );
