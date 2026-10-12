@@ -53,12 +53,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "inr_round_step": 50,                  # INR figures are ceil'd to this
     "tiers": [
         {"key": "spark", "name": "Spark", "usd": 4.99, "bonus_pct": 0, "description": "Try it out"},
-        {"key": "boost", "name": "Boost", "usd": 9.99, "bonus_pct": 5, "description": "Regular use"},
-        {"key": "surge", "name": "Surge", "usd": 19.99, "bonus_pct": 10, "description": "Best for most people", "popular": True},
-        {"key": "turbo", "name": "Turbo", "usd": 49.99, "bonus_pct": 15, "description": "Heavy users"},
-        {"key": "titan", "name": "Titan", "usd": 99.99, "bonus_pct": 20, "description": "Teams & creators"},
+        {"key": "boost", "name": "Boost", "usd": 9.99, "bonus_pct": 3, "description": "Regular use"},
+        {"key": "surge", "name": "Surge", "usd": 19.99, "bonus_pct": 5, "description": "Best for most people", "popular": True},
+        {"key": "turbo", "name": "Turbo", "usd": 49.99, "bonus_pct": 8, "description": "Heavy users"},
+        {"key": "titan", "name": "Titan", "usd": 99.99, "bonus_pct": 10, "description": "Teams & creators"},
     ],
-    "specialised": {"enabled": True, "tier_usd": 9.99, "bonus_pct": 10, "categories": None},
+    "specialised": {"enabled": True, "tier_usd": 9.99, "bonus_pct": 5, "categories": None},
     "payg": {"min_usd": PAYG_HARD_MIN_USD, "max_usd": 2000.0, "step_usd": 5.0, "presets": [20, 50, 100]},
 }
 
