@@ -30,6 +30,7 @@ export default function InterviewSession() {
   const location = useLocation();
 
   const [loading, setLoading] = useState(true);
+  const [openingError, setOpeningError] = useState(false);
   const [openingLoading, setOpeningLoading] = useState(true); // waiting on the interviewer's auto-generated opening greeting
   const [topic, setTopic] = useState(null);
   const [round, setRound] = useState('technical');
@@ -241,6 +242,32 @@ export default function InterviewSession() {
     }
   }, [stream, loading]);
 
+  // One place that reacts to a terminal session status, whether it arrives via
+  // the status poll or directly in a turn response (e.g. the interviewer ends
+  // the final round) — otherwise the turn path would update state and the poll
+  // would then see "no change" and never navigate to the report.
+  const handleTerminalStatus = (status) => {
+    if (status === 'terminated_violations') {
+      stopEverything();
+      setTerminatedOverlay('Proctoring violation limit reached.');
+    } else if (['completed', 'terminated_error', 'abandoned', 'expired'].includes(status)) {
+      stopEverything();
+      setCompletedOverlay(true);
+      setTimeout(() => navigate(`/interview/${sessionId}/report`), 3500);
+    }
+  };
+
+  const showRoundTransitionIfNeeded = (newRound) => {
+    if (newRound !== prevRoundRef.current) {
+      prevRoundRef.current = newRound;
+      setRound(newRound);
+      if (newRound === 'behavioral') {
+        setRoundTransition(true);
+        setTimeout(() => setRoundTransition(false), 3600);
+      }
+    }
+  };
+
   // ---- Status polling (source of truth for the timer + round) -------------
   useEffect(() => {
     if (loading || stoppedAllRef.current) return undefined;
@@ -250,24 +277,10 @@ export default function InterviewSession() {
         const { data } = await api.get(`/interview/sessions/${sessionId}/status`);
         setSecondsLeft(Math.round((data.minutes_remaining || 0) * 60));
         setWarningCount(data.warning_count || 0);
-        if (data.round !== prevRoundRef.current) {
-          prevRoundRef.current = data.round;
-          setRound(data.round);
-          if (data.round === 'behavioral') {
-            setRoundTransition(true);
-            setTimeout(() => setRoundTransition(false), 3600);
-          }
-        }
+        showRoundTransitionIfNeeded(data.round);
         if (data.session_status !== sessionStatus) {
           setSessionStatus(data.session_status);
-          if (data.session_status === 'terminated_violations') {
-            stopEverything();
-            setTerminatedOverlay('Proctoring violation limit reached.');
-          } else if (['completed', 'terminated_error', 'abandoned', 'expired'].includes(data.session_status)) {
-            stopEverything();
-            setCompletedOverlay(true);
-            setTimeout(() => navigate(`/interview/${sessionId}/report`), 3500);
-          }
+          handleTerminalStatus(data.session_status);
         }
       } catch { /* transient network hiccup — next poll will retry */ }
     };
@@ -379,6 +392,8 @@ export default function InterviewSession() {
   // server-side, so a page refresh mid-interview just replays the existing
   // opening rather than generating (or paying for) a new one.
   const beginInterviewOpening = async () => {
+    setOpeningError(false);
+    setOpeningLoading(true);
     try {
       const { data } = await api.post(`/interview/sessions/${sessionId}/start`);
       setTranscript((t) => (data.interviewer_text ? [...t, { speaker: 'interviewer', text: data.interviewer_text }] : t));
@@ -394,7 +409,8 @@ export default function InterviewSession() {
       }
       if (data.interviewer_audio_base64) playInterviewerAudio(data.interviewer_audio_base64);
     } catch (e) {
-      toast.error(detailToString(e, 'Could not start the interview — try refreshing the page.'));
+      toast.error(detailToString(e, 'Could not start the interview — please retry.'));
+      setOpeningError(true);
     } finally {
       setOpeningLoading(false);
     }
@@ -402,7 +418,7 @@ export default function InterviewSession() {
 
   // ---- Submitting a turn -----------------------------------------------------
   const submitTurn = async ({ modality, text = '', audioBlob = null }) => {
-    if (busy || stoppedAllRef.current) return;
+    if (busy || stoppedAllRef.current) return false;
     setBusy(true);
     setBusyLabel(modality === 'voice' ? 'Transcribing…' : 'Thinking…');
     setAvatarState('thinking');
@@ -419,10 +435,12 @@ export default function InterviewSession() {
         ...(data.interviewer_text ? [{ speaker: 'interviewer', text: data.interviewer_text }] : []),
       ]);
       setWarningCount(data.warning_count || 0);
-      setRound(data.round);
-      prevRoundRef.current = data.round;
+      showRoundTransitionIfNeeded(data.round);
       setSecondsLeft(Math.round((data.minutes_remaining || 0) * 60));
-      if (data.session_status !== sessionStatus) setSessionStatus(data.session_status);
+      if (data.session_status !== sessionStatus) {
+        setSessionStatus(data.session_status);
+        handleTerminalStatus(data.session_status);
+      }
       if (data.code_boilerplate?.code) setCode(data.code_boilerplate.code);
       if (data.code_boilerplate?.language && MONACO_LANGUAGE[data.code_boilerplate.language]) {
         setLanguage(data.code_boilerplate.language);
@@ -430,19 +448,23 @@ export default function InterviewSession() {
 
       setBusyLabel('');
       playInterviewerAudio(data.interviewer_audio_base64);
+      return true;
     } catch (e) {
-      toast.error(detailToString(e, 'That turn failed — try again'));
+      toast.error(detailToString(e, 'That turn failed — please try again'));
       setAvatarState('idle');
+      return false;
     } finally {
       setBusy(false);
       setBusyLabel('');
     }
   };
 
-  const sendTyped = () => {
-    if (!typedText.trim() || busy) return;
-    submitTurn({ modality: 'text', text: typedText.trim() });
+  const sendTyped = async () => {
+    const msg = typedText.trim();
+    if (!msg || busy) return;
     setTypedText('');
+    const ok = await submitTurn({ modality: 'text', text: msg });
+    if (!ok) setTypedText((cur) => cur || msg); // don't lose a typed answer to a transient failure
   };
 
   const submitCode = () => {
@@ -764,7 +786,7 @@ export default function InterviewSession() {
           {isDsa ? (
             <div className="flex flex-col h-full min-h-0">
               <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-56 border-b border-border" data-testid="interview-dsa-transcript">
-                <TranscriptFeed transcript={transcript} endRef={transcriptEndRef} openingLoading={openingLoading} />
+                <TranscriptFeed transcript={transcript} endRef={transcriptEndRef} openingLoading={openingLoading} openingError={openingError} onRetry={beginInterviewOpening} />
               </div>
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className="flex items-center justify-between px-3 py-2 border-b border-border gap-2">
@@ -798,7 +820,7 @@ export default function InterviewSession() {
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-4" data-testid="interview-transcript-panel">
-              <TranscriptFeed transcript={transcript} endRef={transcriptEndRef} openingLoading={openingLoading} />
+              <TranscriptFeed transcript={transcript} endRef={transcriptEndRef} openingLoading={openingLoading} openingError={openingError} onRetry={beginInterviewOpening} />
             </div>
           )}
         </div>
@@ -844,7 +866,15 @@ export default function InterviewSession() {
   );
 }
 
-function TranscriptFeed({ transcript, endRef, openingLoading }) {
+function TranscriptFeed({ transcript, endRef, openingLoading, openingError, onRetry }) {
+  if (transcript.length === 0 && openingError) {
+    return (
+      <div className="text-center py-8 space-y-3">
+        <p className="text-sm text-muted-foreground">We couldn't reach your interviewer.</p>
+        <Button size="sm" onClick={onRetry} data-testid="interview-opening-retry-btn">Try again</Button>
+      </div>
+    );
+  }
   if (transcript.length === 0) {
     return (
       <p className="text-sm text-muted-foreground text-center py-8 flex items-center justify-center gap-2">
