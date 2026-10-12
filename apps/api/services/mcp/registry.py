@@ -68,6 +68,28 @@ class ConnectorConfig:
     # on the token endpoint instead of form-encoded client_id/secret.
     token_basic_auth: bool = False
     token_request_json: bool = False
+    # Scope list separator on the authorize URL (Linear wants commas, most want spaces).
+    scope_sep: str = " "
+    # Zendesk wants `scope` repeated on the token request.
+    token_send_scope: bool = False
+    # PKCE (S256). Mandatory for Airtable, on by default for Salesforce external client apps;
+    # harmless where optional.
+    pkce: bool = False
+    # Providers whose refresh call needs a different URL than the code exchange (Basecamp).
+    token_refresh_url: Optional[str] = None
+    # requires_domain connectors whose host is "<sub>.<suffix>" (Zendesk): a bare
+    # subdomain the user types is completed with this suffix.
+    domain_suffix: str = ""
+
+    # Generic REST fallback (services/mcp/servers/rest_server.py): used when the
+    # provider has no usable hosted MCP server for a third-party OAuth token. The
+    # model gets api_get/api_post/... tools locked to these hosts. rest_base may
+    # contain {domain} / {instance_url} (taken from the saved connection) or
+    # {cloudid} (resolved by rest_resolver at startup).
+    rest_base: Optional[str] = None
+    rest_allowed_hosts: List[str] = field(default_factory=list)
+    rest_headers: Dict[str, str] = field(default_factory=dict)
+    rest_resolver: str = ""
 
     # ---- api_key / redirect_token fields ----
     # api_key: the user pastes these values directly (no OAuth exists at the
@@ -109,6 +131,15 @@ class ConnectorConfig:
     mcp_status: str = "ready"
     mcp_notes: str = ""
 
+    def effective_scopes(self) -> List[str]:
+        """Scopes to request. `<CONNECTOR_ID>_SCOPES` (space/comma separated) overrides the
+        registry default — some providers (GitLab, Dropbox, Zoom) only accept scopes that are
+        ticked on the operator's app, which the code can't know."""
+        raw = os.environ.get(f"{self.id.upper()}_SCOPES", "").strip()
+        if raw:
+            return [x for x in raw.replace(",", " ").split() if x]
+        return list(self.scopes)
+
     def client_id(self) -> str:
         return os.environ.get(self.client_id_env, "") if self.client_id_env else ""
 
@@ -128,6 +159,16 @@ class ConnectorConfig:
         if self.auth_type == "redirect_token":
             return bool(self.client_id())
         return bool(self.client_id() and self.client_secret())
+
+
+REST_SERVER_ARGS = ["-m", "services.mcp.servers.rest_server"]
+REST_TOKEN_ENV = "REST_ACCESS_TOKEN"
+
+
+def _rest(**kw) -> dict:
+    """Common ConnectorConfig kwargs for a connector served by the generic REST tool server."""
+    return dict(transport="stdio", stdio_command=sys.executable, stdio_args=REST_SERVER_ARGS,
+                token_env_var=REST_TOKEN_ENV, mcp_status="ready", **kw)
 
 
 CONNECTORS: Dict[str, ConnectorConfig] = {
@@ -216,28 +257,29 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
         client_id_env="MS_TEAMS_CLIENT_ID", client_secret_env="MS_TEAMS_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="No official Microsoft MCP server. Candidates to build from: PyPI `mcp-teams-server` or npm `@floriscornel/teams-mcp` (both community, wrap Microsoft Graph).",
+        **_rest(rest_base="https://graph.microsoft.com/v1.0", rest_allowed_hosts=["graph.microsoft.com"]),
+        mcp_notes="Microsoft Graph via the generic REST tool server.",
     ),
     "discord": ConnectorConfig(
         id="discord", display_name="Discord", category="Communication",
-        description="Send and read messages in Discord servers you install the bot into.",
-        scopes=["identify", "guilds", "bot"],
+        description="See your Discord profile and servers (bot actions need a bot token, not yet supported).",
+        # Without the `bot` scope this is a plain user-token flow; the user token can read /users/@me
+        # and /users/@me/guilds. Posting/reading messages needs a platform bot token (not wired).
+        scopes=["identify", "guilds"],
         authorize_url="https://discord.com/oauth2/authorize", token_url="https://discord.com/api/oauth2/token",
         client_id_env="DISCORD_CLIENT_ID", client_secret_env="DISCORD_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes=("Hybrid auth: the OAuth flow only lets a user pick which server to install the bot into — actual "
-                   "message send/read uses one static platform-wide Bot Token (from the Discord Developer Portal's "
-                   "Bot tab), not a per-user token. Community packages: npm `@barryyip0625/mcp-discord` or `@IQAIcom/mcp-discord`."),
+        **_rest(rest_base="https://discord.com/api/v10", rest_allowed_hosts=["discord.com"]),
+        mcp_notes="Limited to profile + server list with a user token; message actions need a bot token.",
     ),
     "zoom": ConnectorConfig(
         id="zoom", display_name="Zoom", category="Communication",
         description="Create and manage Zoom meetings on your behalf.",
-        scopes=["user:read:user", "meeting:write:meeting", "meeting:read:meeting"],
+        # Scopes are configured on the Zoom app itself; the authorize `scope` param is optional there.
+        scopes=[],
         authorize_url="https://zoom.us/oauth/authorize", token_url="https://zoom.us/oauth/token",
         client_id_env="ZOOM_CLIENT_ID", client_secret_env="ZOOM_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="No single trustworthy community/official MCP package found — build a thin stdio wrapper over Zoom's REST API (same shape as servers/google_calendar_server.py).",
+        token_basic_auth=True,  # Zoom requires HTTP Basic client auth on the token endpoint
+        **_rest(rest_base="https://api.zoom.us/v2", rest_allowed_hosts=["api.zoom.us"]),
     ),
     "microsoft_outlook_mail": ConnectorConfig(
         id="microsoft_outlook_mail", display_name="Microsoft Outlook (Mail)", category="Communication",
@@ -246,8 +288,7 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
         client_id_env="MS_OUTLOOK_CLIENT_ID", client_secret_env="MS_OUTLOOK_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="No well-established MCP package found — build a thin stdio wrapper over Microsoft Graph's /me/messages endpoints (same shape as servers/gmail_server.py). Can reuse the same Entra app registration as Teams/OneDrive/SharePoint.",
+        **_rest(rest_base="https://graph.microsoft.com/v1.0", rest_allowed_hosts=["graph.microsoft.com"]),
     ),
     "telegram": ConnectorConfig(
         id="telegram", display_name="Telegram", category="Communication",
@@ -287,8 +328,7 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth", token_url="https://oauth2.googleapis.com/token",
         client_id_env="GOOGLE_CLIENT_ID", client_secret_env="GOOGLE_CLIENT_SECRET",
         extra_authorize_params={"access_type": "offline", "prompt": "consent"},
-        mcp_status="needs_server",
-        mcp_notes="Community/archived npm `@modelcontextprotocol/server-gdrive` is read-mostly; build a small stdio wrapper over the Docs API for real create/edit tools.",
+        **_rest(rest_base="https://docs.googleapis.com/v1", rest_allowed_hosts=["docs.googleapis.com", "www.googleapis.com"]),
     ),
     "google_sheets": ConnectorConfig(
         id="google_sheets", display_name="Google Sheets", category="Productivity & Docs",
@@ -297,18 +337,16 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth", token_url="https://oauth2.googleapis.com/token",
         client_id_env="GOOGLE_CLIENT_ID", client_secret_env="GOOGLE_CLIENT_SECRET",
         extra_authorize_params={"access_type": "offline", "prompt": "consent"},
-        mcp_status="needs_server",
-        mcp_notes="No dedicated official Sheets MCP — build a small stdio wrapper over the Sheets API's values.get/update.",
+        **_rest(rest_base="https://sheets.googleapis.com/v4", rest_allowed_hosts=["sheets.googleapis.com", "www.googleapis.com"]),
     ),
     "google_drive": ConnectorConfig(
         id="google_drive", display_name="Google Drive", category="Productivity & Docs",
         description="Search, list, read, and upload files in your Google Drive.",
-        scopes=["https://www.googleapis.com/auth/drive.file"],
+        scopes=["https://www.googleapis.com/auth/drive"],
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth", token_url="https://oauth2.googleapis.com/token",
         client_id_env="GOOGLE_CLIENT_ID", client_secret_env="GOOGLE_CLIENT_SECRET",
         extra_authorize_params={"access_type": "offline", "prompt": "consent"},
-        mcp_status="needs_server",
-        mcp_notes="Community/archived npm `@modelcontextprotocol/server-gdrive` — treat as a starting point only, verify before depending on it.",
+        **_rest(rest_base="https://www.googleapis.com/drive/v3", rest_allowed_hosts=["www.googleapis.com"]),
     ),
     "atlassian_confluence": ConnectorConfig(
         id="atlassian_confluence", display_name="Atlassian Confluence", category="Productivity & Docs",
@@ -317,8 +355,10 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://auth.atlassian.com/authorize", token_url="https://auth.atlassian.com/oauth/token",
         client_id_env="ATLASSIAN_CLIENT_ID", client_secret_env="ATLASSIAN_CLIENT_SECRET",
         extra_authorize_params={"audience": "api.atlassian.com", "prompt": "consent"},
-        transport="http", http_url="https://mcp.atlassian.com/v1/mcp/authv2",
-        mcp_notes="Official hosted remote MCP (Rovo, Cloud-only), shared with the atlassian_jira connector below — same OAuth app.",
+        token_request_json=True,  # Atlassian's token endpoint takes a JSON body
+        # 3LO tokens are not accepted by the hosted Rovo MCP, so go through the cloud REST gateway.
+        **_rest(rest_base="https://api.atlassian.com/ex/confluence/{cloudid}/wiki/rest/api", rest_allowed_hosts=["api.atlassian.com"], rest_resolver="atlassian"),
+        mcp_notes="Confluence Cloud REST API through api.atlassian.com; shares the OAuth app with Jira.",
     ),
     "microsoft_onedrive": ConnectorConfig(
         id="microsoft_onedrive", display_name="Microsoft OneDrive", category="Productivity & Docs",
@@ -327,8 +367,7 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
         client_id_env="MS_GRAPH_CLIENT_ID", client_secret_env="MS_GRAPH_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="Community npm `ms-365-mcp-server` wraps Graph incl. OneDrive; verify its OAuth/env-var contract before depending on it.",
+        **_rest(rest_base="https://graph.microsoft.com/v1.0", rest_allowed_hosts=["graph.microsoft.com"]),
     ),
     "microsoft_sharepoint": ConnectorConfig(
         id="microsoft_sharepoint", display_name="Microsoft SharePoint", category="Productivity & Docs",
@@ -337,19 +376,20 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
         client_id_env="MS_GRAPH_CLIENT_ID", client_secret_env="MS_GRAPH_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes=("Reuses the same Entra app registration as OneDrive. Sites.ReadWrite.All may require an org admin "
-                   "to grant consent — not self-serve in every tenant. Community npm `ms-365-mcp-server` as a starting point."),
+        **_rest(rest_base="https://graph.microsoft.com/v1.0", rest_allowed_hosts=["graph.microsoft.com"]),
+        mcp_notes="Sites.ReadWrite.All may need tenant admin consent.",
     ),
     "dropbox": ConnectorConfig(
         id="dropbox", display_name="Dropbox", category="Productivity & Docs",
         description="List, read, upload, and manage files in your Dropbox.",
-        scopes=["files.content.read", "files.content.write", "files.metadata.read", "files.metadata.write"],
-        authorize_url="https://www.dropbox.com/oauth2/authorize", token_url="https://api.dropbox.com/oauth2/token",
+        # No scope param: Dropbox then grants whatever scopes are enabled on the app (a scope that is
+        # not ticked in the app console makes authorize fail). Override with DROPBOX_SCOPES.
+        scopes=[],
+        authorize_url="https://www.dropbox.com/oauth2/authorize", token_url="https://api.dropboxapi.com/oauth2/token",
         client_id_env="DROPBOX_APP_KEY", client_secret_env="DROPBOX_APP_SECRET",
         extra_authorize_params={"token_access_type": "offline"},
-        mcp_status="needs_server",
-        mcp_notes="Community npm `dbx-mcp-server` (unaffiliated with Dropbox) as a starting point — or build a thin wrapper, same shape as servers/google_calendar_server.py.",
+        **_rest(rest_base="https://api.dropboxapi.com/2", rest_allowed_hosts=["api.dropboxapi.com", "content.dropboxapi.com"]),
+        mcp_notes="Dropbox RPC endpoints (POST JSON, e.g. /files/list_folder) via the generic REST tool server.",
     ),
     "box": ConnectorConfig(
         id="box", display_name="Box", category="Productivity & Docs",
@@ -365,18 +405,20 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "asana": ConnectorConfig(
         id="asana", display_name="Asana", category="Project Management",
         description="Read and manage your Asana tasks, projects, and comments.",
-        auth_type="api_key", credential_fields=["access_token"], credential_env_map={"access_token": "ASANA_ACCESS_TOKEN"},
+        scopes=[],  # default (full) scope
+        authorize_url="https://app.asana.com/-/oauth_authorize", token_url="https://app.asana.com/-/oauth_token",
+        client_id_env="ASANA_CLIENT_ID", client_secret_env="ASANA_CLIENT_SECRET",
         transport="stdio", stdio_command=sys.executable,
-        stdio_args=["-m", "services.mcp.servers.asana_server"],
-        mcp_notes="Paste a Personal Access Token from app.asana.com/0/my-apps.",
+        stdio_args=["-m", "services.mcp.servers.asana_server"], token_env_var="ASANA_ACCESS_TOKEN",
     ),
     "linear": ConnectorConfig(
         id="linear", display_name="Linear", category="Project Management",
         description="Read and manage your Linear issues, projects, cycles, and comments.",
-        auth_type="api_key", credential_fields=["api_key"], credential_env_map={"api_key": "LINEAR_API_KEY"},
+        scopes=["read", "write"], scope_sep=",",  # Linear wants comma-separated scopes
+        authorize_url="https://linear.app/oauth/authorize", token_url="https://api.linear.app/oauth/token",
+        client_id_env="LINEAR_CLIENT_ID", client_secret_env="LINEAR_CLIENT_SECRET",
         transport="stdio", stdio_command=sys.executable,
-        stdio_args=["-m", "services.mcp.servers.linear_server"],
-        mcp_notes="Create a personal API key at linear.app/settings/account/security.",
+        stdio_args=["-m", "services.mcp.servers.linear_server"], token_env_var="LINEAR_ACCESS_TOKEN",
     ),
     "atlassian_jira": ConnectorConfig(
         id="atlassian_jira", display_name="Atlassian Jira", category="Project Management",
@@ -385,8 +427,9 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://auth.atlassian.com/authorize", token_url="https://auth.atlassian.com/oauth/token",
         client_id_env="ATLASSIAN_CLIENT_ID", client_secret_env="ATLASSIAN_CLIENT_SECRET",
         extra_authorize_params={"audience": "api.atlassian.com", "prompt": "consent"},
-        transport="http", http_url="https://mcp.atlassian.com/v1/mcp/authv2",
-        mcp_notes="Official hosted remote MCP (Rovo, Cloud-only), shared with the atlassian_confluence connector — same OAuth app.",
+        token_request_json=True,
+        **_rest(rest_base="https://api.atlassian.com/ex/jira/{cloudid}/rest/api/3", rest_allowed_hosts=["api.atlassian.com"], rest_resolver="atlassian"),
+        mcp_notes="Jira Cloud REST API through api.atlassian.com; shares the OAuth app with Confluence.",
     ),
     "trello": ConnectorConfig(
         id="trello", display_name="Trello", category="Project Management",
@@ -416,7 +459,7 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "monday": ConnectorConfig(
         id="monday", display_name="monday.com", category="Project Management",
         description="Read and manage your monday.com boards, items, and updates.",
-        scopes=["boards:read", "boards:write", "users:read", "updates:read", "updates:write"],
+        scopes=[],  # omit: monday then grants all scopes configured on the app
         authorize_url="https://auth.monday.com/oauth2/authorize", token_url="https://auth.monday.com/oauth2/token",
         client_id_env="MONDAY_CLIENT_ID", client_secret_env="MONDAY_CLIENT_SECRET",
         transport="http", http_url="https://mcp.monday.com/mcp",
@@ -426,37 +469,43 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         id="basecamp", display_name="Basecamp", category="Project Management",
         description="Read and manage your Basecamp to-dos, messages, and schedule items.",
         scopes=[],
-        authorize_url="https://launchpad.37signals.com/authorization/new", token_url="https://launchpad.37signals.com/authorization/token",
+        authorize_url="https://launchpad.37signals.com/authorization/new",
+        token_url="https://launchpad.37signals.com/authorization/token?type=web_server",
+        token_refresh_url="https://launchpad.37signals.com/authorization/token?type=refresh",
         client_id_env="BASECAMP_CLIENT_ID", client_secret_env="BASECAMP_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="No mature official/community MCP server found — build a thin wrapper over the Basecamp REST API. Every request needs a descriptive User-Agent header with a contact email or Basecamp may rate-limit/reject it.",
+        extra_authorize_params={"type": "web_server"},
+        **_rest(rest_base="https://3.basecampapi.com/{cloudid}", rest_allowed_hosts=["3.basecampapi.com", "launchpad.37signals.com"],
+                rest_resolver="basecamp", rest_headers={"User-Agent": "IEMA.ai (support@iema.ai)"}),
+        mcp_notes="Basecamp 3/4 API; the account id is resolved from launchpad authorization.json.",
     ),
     "airtable": ConnectorConfig(
         id="airtable", display_name="Airtable", category="Project Management",
         description="Read and manage your Airtable bases, tables, and records.",
-        auth_type="api_key", credential_fields=["access_token"], credential_env_map={"access_token": "AIRTABLE_ACCESS_TOKEN"},
+        scopes=["data.records:read", "data.records:write", "schema.bases:read"],
+        authorize_url="https://airtable.com/oauth2/v1/authorize", token_url="https://airtable.com/oauth2/v1/token",
+        client_id_env="AIRTABLE_CLIENT_ID", client_secret_env="AIRTABLE_CLIENT_SECRET",
+        pkce=True, token_basic_auth=True,  # Airtable mandates PKCE and Basic client auth
         transport="stdio", stdio_command=sys.executable,
-        stdio_args=["-m", "services.mcp.servers.airtable_server"],
-        mcp_notes="Create a personal access token at airtable.com/create/tokens (scopes: data.records:read, data.records:write, schema.bases:read).",
+        stdio_args=["-m", "services.mcp.servers.airtable_server"], token_env_var="AIRTABLE_ACCESS_TOKEN",
     ),
     # ============== Developer Tools ==============
     "gitlab": ConnectorConfig(
         id="gitlab", display_name="GitLab", category="Developer Tools",
         description="Read and manage your GitLab projects, issues, merge requests, and repository content.",
-        scopes=["read_api", "read_user", "read_repository"],
+        # Must be a subset of the scopes ticked on the GitLab application; override with GITLAB_SCOPES.
+        scopes=["api", "read_user"],
         authorize_url="https://gitlab.com/oauth/authorize", token_url="https://gitlab.com/oauth/token",
         client_id_env="GITLAB_CLIENT_ID", client_secret_env="GITLAB_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="GitLab's own Duo MCP server is Beta and gated behind a Premium/Ultimate subscription with incomplete public endpoint docs — build a thin wrapper over the REST/GraphQL API instead.",
+        **_rest(rest_base="https://gitlab.com/api/v4", rest_allowed_hosts=["gitlab.com"]),
     ),
     "bitbucket": ConnectorConfig(
         id="bitbucket", display_name="Bitbucket", category="Developer Tools",
         description="Read and manage your Bitbucket Cloud repositories, pull requests, and pipelines.",
-        scopes=["account", "repository", "pullrequest"],
+        scopes=[],  # Bitbucket ignores the scope param; permissions are set on the OAuth consumer
         authorize_url="https://bitbucket.org/site/oauth2/authorize", token_url="https://bitbucket.org/site/oauth2/access_token",
         client_id_env="BITBUCKET_CLIENT_ID", client_secret_env="BITBUCKET_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes="No official Atlassian Bitbucket MCP server exists — community npm `@aashari/mcp-server-atlassian-bitbucket` is the most-used option; vet before depending on it.",
+        token_basic_auth=True,
+        **_rest(rest_base="https://api.bitbucket.org/2.0", rest_allowed_hosts=["api.bitbucket.org"]),
     ),
     "vercel": ConnectorConfig(
         id="vercel", display_name="Vercel", category="Developer Tools",
@@ -482,37 +531,25 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "azure": ConnectorConfig(
         id="azure", display_name="Microsoft Azure", category="Developer Tools",
         description="Call Azure Resource Manager APIs on resources you have permission to manage.",
-        # Delegated (user) access to Azure Resource Manager — NOT a service principal/client
-        # secret. The user just logs in with their own Microsoft account and approves; they
-        # can only ever act on resources that account already has permission on. Reuses the
-        # same Entra app registration as microsoft_teams/microsoft_outlook_mail/onedrive —
-        # the operator just needs to add the "Azure Service Management" API permission to it
-        # once, in addition to whatever Graph permissions it already has.
+        # Delegated (user) access to Azure Resource Manager via the same Entra app as the Graph
+        # connectors; the app needs the "Azure Service Management / user_impersonation" permission.
         scopes=["https://management.azure.com/user_impersonation", "offline_access"],
         authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
         client_id_env="MS_GRAPH_CLIENT_ID", client_secret_env="MS_GRAPH_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes=("Official npm `@azure/mcp` reads the resulting delegated token the standard Azure Identity way "
-                   "— needs a small stdio wrapper to inject it (the official package defaults to interactive "
-                   "`az login`/service-principal env vars, not a pre-obtained delegated token; confirm its "
-                   "token-injection option before wiring this up as a session-scoped subprocess)."),
+        **_rest(rest_base="https://management.azure.com", rest_allowed_hosts=["management.azure.com"]),
+        mcp_notes="ARM calls need an api-version query param.",
     ),
     "gcp": ConnectorConfig(
         id="gcp", display_name="Google Cloud Platform", category="Developer Tools",
         description="Call GCP APIs (Cloud SQL, BigQuery, Storage, etc.) on your own projects.",
-        # Same Google OAuth app as Calendar/Gmail/Docs/Drive — just the broader cloud-platform
-        # scope, which lets the user grant delegated access to their own GCP projects via the
-        # normal Google consent screen. No service account JSON key needed from the user.
+        # cloud-platform is broad/sensitive; the user grants delegated access via the normal Google consent screen.
         scopes=["https://www.googleapis.com/auth/cloud-platform"],
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth", token_url="https://oauth2.googleapis.com/token",
         client_id_env="GOOGLE_CLIENT_ID", client_secret_env="GOOGLE_CLIENT_SECRET",
         extra_authorize_params={"access_type": "offline", "prompt": "consent"},
-        mcp_status="needs_server",
-        mcp_notes=("Google's official MCP Toolbox for Databases (googleapis/genai-toolbox) covers Cloud SQL/Spanner/"
-                   "BigQuery/Firestore specifically, not general GCP infra — no single official broad-infra MCP "
-                   "server was found yet. cloud-platform is a broad/sensitive scope — Google's standard OAuth "
-                   "verification review applies past 100 users, same as the other Google connectors here."),
+        **_rest(rest_base="https://cloudresourcemanager.googleapis.com/v1", rest_allowed_hosts=["*.googleapis.com"]),
+        mcp_notes="Any *.googleapis.com endpoint via the generic REST tool server; the API must be enabled on the user's project.",
     ),
     "circleci": ConnectorConfig(
         id="circleci", display_name="CircleCI", category="Developer Tools",
@@ -524,10 +561,11 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "sentry": ConnectorConfig(
         id="sentry", display_name="Sentry", category="Developer Tools",
         description="Read and triage your Sentry issues, events, and project data.",
-        scopes=["org:read", "project:read", "event:read", "issue:write"],
+        scopes=["org:read", "project:read", "event:read", "project:write"],
         authorize_url="https://sentry.io/oauth/authorize/", token_url="https://sentry.io/oauth/token/",
         client_id_env="SENTRY_CLIENT_ID", client_secret_env="SENTRY_CLIENT_SECRET",
-        transport="http", http_url="https://mcp.sentry.dev/mcp",
+        **_rest(rest_base="https://sentry.io/api/0", rest_allowed_hosts=["sentry.io"]),
+        mcp_notes="Sentry REST API with the user's OAuth token (the hosted MCP runs its own OAuth and does not accept this token).",
     ),
 
     # ============== CRM & Support ==============
@@ -543,15 +581,13 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
     "salesforce": ConnectorConfig(
         id="salesforce", display_name="Salesforce", category="CRM & Support",
         description="Query and modify Salesforce CRM records (leads, accounts, opportunities, cases).",
-        scopes=["api", "refresh_token", "offline_access"],
+        scopes=["api", "refresh_token"],
         authorize_url="https://login.salesforce.com/services/oauth2/authorize",
         token_url="https://login.salesforce.com/services/oauth2/token",
         client_id_env="SALESFORCE_CLIENT_ID", client_secret_env="SALESFORCE_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes=("Use test.salesforce.com instead of login.salesforce.com for sandbox orgs, or the org's My Domain "
-                   "(now mandatory for new orgs) — this registry's static authorize_url doesn't vary per-org yet. "
-                   "Salesforce's official MCP (GA) needs a separate External Client App with an mcp_api scope, distinct "
-                   "from this standard REST connected app."),
+        pkce=True,
+        **_rest(rest_base="{instance_url}/services/data/v62.0", rest_allowed_hosts=["*.salesforce.com", "*.force.com"]),
+        mcp_notes="Production/dev-edition orgs (login.salesforce.com); sandboxes need test.salesforce.com. instance_url comes from the token response.",
     ),
     "intercom": ConnectorConfig(
         id="intercom", display_name="Intercom", category="CRM & Support",
@@ -566,13 +602,12 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         id="zendesk", display_name="Zendesk", category="CRM & Support",
         description="Read and manage Zendesk support tickets, users, and help center content.",
         scopes=["read", "write"],
-        authorize_url="https://{subdomain}.zendesk.com/oauth/authorizations/new",
-        token_url="https://{subdomain}.zendesk.com/oauth/tokens",
+        authorize_url="https://{domain}/oauth/authorizations/new",
+        token_url="https://{domain}/oauth/tokens",
+        requires_domain=True, domain_label="Zendesk subdomain", domain_placeholder="yourcompany.zendesk.com",
+        domain_suffix=".zendesk.com", token_request_json=True, token_send_scope=True,
         client_id_env="ZENDESK_CLIENT_ID", client_secret_env="ZENDESK_CLIENT_SECRET",
-        mcp_status="needs_server",
-        mcp_notes=("authorize_url/token_url are templated per-customer subdomain — this registry's static-URL OAuth "
-                   "flow doesn't support that yet (needs a per-connection subdomain field, an engine change). No "
-                   "verified MCP package found either — build a thin REST wrapper once the subdomain support exists."),
+        **_rest(rest_base="https://{domain}/api/v2", rest_allowed_hosts=["*.zendesk.com"]),
     ),
     "freshdesk": ConnectorConfig(
         id="freshdesk", display_name="Freshdesk", category="CRM & Support",
@@ -704,9 +739,8 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth", token_url="https://oauth2.googleapis.com/token",
         client_id_env="GOOGLE_CLIENT_ID", client_secret_env="GOOGLE_CLIENT_SECRET",
         extra_authorize_params={"access_type": "offline", "prompt": "consent"},
-        transport="stdio", stdio_command="uvx", stdio_args=["google-analytics-mcp"],
-        mcp_status="needs_server",
-        mcp_notes="Official Google-published server (github.com/googleanalytics/google-analytics-mcp) — promising, but this exact invocation/env-var contract hasn't been verified end-to-end yet.",
+        **_rest(rest_base="https://analyticsdata.googleapis.com/v1beta", rest_allowed_hosts=["analyticsdata.googleapis.com", "analyticsadmin.googleapis.com"]),
+        mcp_notes="GA4 Data API (runReport) and Admin API (accountSummaries) via the generic REST tool server.",
     ),
 }
 

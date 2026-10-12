@@ -7,6 +7,7 @@ afterward. No cross-request pooling in phase 1 — simplest correct thing;
 revisit if per-prompt subprocess/connection spin-up becomes a latency issue.
 """
 import asyncio
+import json
 import logging
 import os
 from contextlib import AsyncExitStack
@@ -87,6 +88,8 @@ class ConnectorSessionPool:
             else:
                 access_token = await oauth_service.get_valid_access_token(self.user_id, connector_id)
                 injected_env = {cfg.token_env_var: access_token}
+                if cfg.rest_base:
+                    injected_env.update(await self._rest_env(cfg))
             read, write = await self._stack.enter_async_context(
                 stdio_client(StdioServerParameters(
                     command=cfg.stdio_command,
@@ -107,6 +110,23 @@ class ConnectorSessionPool:
         session = await self._stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         self._sessions[connector_id] = session
+
+    async def _rest_env(self, cfg: ConnectorConfig) -> Dict[str, str]:
+        """Env for services/mcp/servers/rest_server.py: base URL (per-connection {domain}/{instance_url}
+        filled in; {cloudid} is resolved inside the server), host allow-list and extra headers."""
+        extras = await oauth_service.get_connection_extras(self.user_id, cfg.id)
+        base = cfg.rest_base
+        for key, value in extras.items():
+            base = base.replace("{" + key + "}", value.rstrip("/"))
+        if "{domain}" in base or "{instance_url}" in base:
+            raise ValueError(f"{cfg.display_name} connection is missing its account host — please reconnect")
+        return {
+            "REST_API_NAME": cfg.display_name,
+            "REST_BASE_URL": base,
+            "REST_ALLOWED_HOSTS": ",".join(cfg.rest_allowed_hosts),
+            "REST_EXTRA_HEADERS": json.dumps(cfg.rest_headers),
+            "REST_RESOLVER": cfg.rest_resolver,
+        }
 
     async def list_tools_anthropic(self, connector_id: str) -> List[dict]:
         session = self._sessions[connector_id]

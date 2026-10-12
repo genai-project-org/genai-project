@@ -1,4 +1,4 @@
-"""In-house MCP server over Linear's GraphQL API (personal API key in LINEAR_API_KEY)."""
+"""In-house MCP server over Linear's GraphQL API (OAuth access token in LINEAR_ACCESS_TOKEN; a legacy personal key in LINEAR_API_KEY also works)."""
 import os
 from typing import Optional
 
@@ -10,9 +10,12 @@ mcp = FastMCP("linear")
 
 
 async def _gql(query: str, variables: Optional[dict] = None) -> dict:
+    oauth = os.environ.get("LINEAR_ACCESS_TOKEN", "")
+    # OAuth tokens are sent as a Bearer token; personal API keys go in the header bare.
+    auth = f"Bearer {oauth}" if oauth else os.environ.get("LINEAR_API_KEY", "")
     data = await request(
         "POST", "https://api.linear.app/graphql", service="Linear",
-        headers={"Authorization": os.environ.get("LINEAR_API_KEY", ""), "Content-Type": "application/json"},
+        headers={"Authorization": auth, "Content-Type": "application/json"},
         json={"query": query, "variables": variables or {}},
     )
     if isinstance(data, dict) and data.get("errors"):
