@@ -11,6 +11,7 @@ session lifecycle, persistence and turn orchestration; this module is called
 once per turn with the running message history and returns the interviewer's
 reply plus a log of any tool calls made.
 """
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,11 @@ from services import practice_service
 
 logger = logging.getLogger(__name__)
 
+LLM_CALL_TIMEOUT_SECONDS = 60
+FALLBACK_OPENING = (
+    "Hi, welcome, thanks for joining. Let's get started \u2014 could you begin by telling me a little about "
+    "your background and what you've been working on recently?"
+)
 MAX_TOOL_ITERATIONS = 6  # hard cap per turn against a runaway/looping tool-call chain
 MIN_QUESTIONS_BEFORE_END = {"technical": 3, "behavioral": 2}
 
@@ -156,6 +162,7 @@ CANDIDATE BACKGROUND:
 {resume_context}
 
 BEHAVIOR:
+- The candidate can only see what you SAY — whenever you pose a problem or question, state it in full in that same message (for coding: the title, a clear description, 1-2 examples and constraints; for design: the full prompt). Never refer to "the problem" or tell them to start without having stated it. Right after their brief introduction, pose the first real question immediately.
 - Ask ONE question or follow-up at a time, then wait for the candidate's answer — never stack multiple questions in one message.
 - Adapt difficulty based on how well they're doing: go deeper on strengths, offer a small hint (never the answer) if they're stuck, don't pile on if they're clearly struggling.
 {"- Every time you pose a NEW coding problem (including your very first question this round), call set_code_boilerplate with a matching starter function signature — the candidate's editor is otherwise empty, and typing a signature from scratch or pasting one in wastes time / triggers a proctoring flag." if topic == "dsa" and round_name == "technical" else ""}
@@ -245,9 +252,22 @@ async def run_turn(
     end_reason: Optional[str] = None
     code_boilerplate: Optional[Dict[str, str]] = None
     final_text = ""
+    is_opening = not history
+    llm_failed = False
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        resp = await chat.create_with_tools(messages, TOOL_SCHEMAS, system=system_prompt)
+        try:
+            resp = await asyncio.wait_for(
+                chat.create_with_tools(messages, TOOL_SCHEMAS, system=system_prompt), timeout=LLM_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # Both providers failed or timed out — never let this crash the
+            # session (the candidate's answer is still persisted by the
+            # caller); keep whatever text an earlier iteration produced, or
+            # fall back to a neutral in-character line.
+            logger.exception("interview_agent: LLM call failed, using fallback reply")
+            llm_failed = True
+            break
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
@@ -284,8 +304,14 @@ async def run_turn(
         if resp.stop_reason != "tool_use":
             break
 
+    if not final_text:
+        final_text = (
+            FALLBACK_OPENING if is_opening
+            else "Sorry, I lost you for a second there. Could you say that again, or carry on with your approach?"
+            if llm_failed else "Could you say a bit more about that?"
+        )
     return {
-        "interviewer_text": final_text or "Could you say a bit more about that?",
+        "interviewer_text": final_text,
         "tool_calls": tool_call_log,
         "end_requested": end_requested,
         "end_reason": end_reason,
