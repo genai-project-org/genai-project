@@ -446,7 +446,24 @@ export default function InterviewSetup() {
         state: { language: isDsaTopic ? language : null, micDeviceId: selectedMicId || null, camDeviceId: selectedCamId || null },
       });
     } catch (e) {
-      toast.error(detailToString(e, 'Failed to start interview'));
+      // The fullscreen request fired from the click handler; don't leave the
+      // candidate stuck in it on the setup page after a failed create.
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      setConsentOpen(false);
+      if (e?.response?.status === 409) {
+        // An unfinished session already exists — offer a one-click way back into it.
+        let activeId = null;
+        try {
+          const { data: hist } = await api.get('/interview/sessions?limit=5');
+          activeId = (hist.items || []).find((x) => ['created', 'technical_in_progress', 'behavioral_in_progress'].includes(x.status))?.id;
+        } catch { /* fall through to the plain message */ }
+        toast.error(detailToString(e, 'You already have an active interview.'), activeId ? {
+          action: { label: 'Resume it', onClick: () => navigate(`/interview/${activeId}`) },
+          duration: 10000,
+        } : undefined);
+      } else {
+        toast.error(detailToString(e, 'Failed to start interview'));
+      }
       setCreating(false);
     }
   };
