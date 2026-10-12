@@ -441,7 +441,7 @@ def _register_body_font(pdf: FPDF) -> str:
     return "ReportBody"
 
 
-PLATFORM_NAME = "supercreater.ai"
+PLATFORM_NAME = "IEMA.ai"
 
 # A small, consistent palette (RGB) rather than default-black-on-white —
 # roughly matches the web report's primary/muted/border tokens so the PDF
@@ -470,8 +470,8 @@ class _ReportPDF(FPDF):
         self.set_y(10)
         self.set_font(self.font_family, "B", 13)
         self.set_text_color(*_INK)
-        word_w = self.get_string_width("supercreater")
-        self.cell(word_w, 7, "supercreater", border=0)
+        word_w = self.get_string_width("IEMA")
+        self.cell(word_w, 7, "IEMA", border=0)
         self.set_text_color(*_ACCENT)
         dot_w = self.get_string_width(".")
         self.cell(dot_w, 7, ".", border=0)
