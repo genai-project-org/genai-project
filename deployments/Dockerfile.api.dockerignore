@@ -1,0 +1,15 @@
+**/.env
+**/.env.*
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+.git
+.claude
+apps/mobile
+apps/web
+apps/api/tests
+apps/api/uploads
+apps/api/.mongo_data_practice
+apps/api/*.log
+deployments

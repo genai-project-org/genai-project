@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# Build context: repo root.  docker build -f deployments/Dockerfile.api .
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY apps/api/requirements.txt .
+# requirements.txt pins fastapi/starlette too old for mcp==1.30; relax them at build time.
+RUN sed -E -i 's/^fastapi==.*/fastapi>=0.115/; /^starlette==/d' requirements.txt \
+    && pip install -r requirements.txt
+COPY apps/api/ .
+RUN mkdir -p /app/uploads
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
+# Single worker on purpose: APScheduler jobs + startup seeding live in-process.
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

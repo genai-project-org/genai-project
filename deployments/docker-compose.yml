@@ -1,0 +1,55 @@
+# Run via deploy.sh, or from the repo root:
+#   docker compose -f deployments/docker-compose.yml --env-file deployments/.env.production up -d --build
+name: iema
+services:
+  caddy:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.web
+      args:
+        VITE_BACKEND_URL: https://${DOMAIN:-iema.ai}
+    image: iema-web:latest
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-iema.ai, www.iema.ai}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@iema.ai}
+    volumes: [caddy_data:/data, caddy_config:/config]
+    depends_on: [api]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.api
+    image: iema-api:latest
+    restart: unless-stopped
+    env_file: [.env.production]
+    environment:
+      # Derived from DOMAIN unless explicitly set in .env.production
+      APP_URL: ${APP_URL:-https://${DOMAIN:-iema.ai}}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://${DOMAIN:-iema.ai},https://www.${DOMAIN:-iema.ai}}
+      MONGO_URL: ${MONGO_URL:-mongodb://mongo:27017}
+      DB_NAME: ${DB_NAME:-iema}
+      PISTON_URL: ${PISTON_URL:-http://piston:2000/api/v2}
+      BACKEND_UPLOADS_DIR: /app/uploads
+    volumes: [uploads:/app/uploads, hf_cache:/root/.cache/huggingface]
+    depends_on: [piston, mongo]
+    expose: ["8000"]
+
+  # Code runner for the Hack-a-Thon contest. Needs privileged (isolate sandbox).
+  piston:
+    image: ghcr.io/engineer-man/piston:latest
+    restart: unless-stopped
+    privileged: true
+    tmpfs: ["/piston/jobs:exec,uid=1000,gid=1000,mode=711"]
+    volumes: [piston_packages:/piston/packages]
+    expose: ["2000"]
+
+  # Local Mongo (default). To use Atlas instead, set MONGO_URL in .env.production.
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes: [mongo_data:/data/db]
+    expose: ["27017"]
+
+volumes: {caddy_data: {}, caddy_config: {}, uploads: {}, hf_cache: {}, piston_packages: {}, mongo_data: {}}
