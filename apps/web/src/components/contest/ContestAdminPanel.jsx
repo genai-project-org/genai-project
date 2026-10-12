@@ -1,207 +1,233 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import api from '@/lib/api';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
-import { Loader2, Plus, Save, X } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Loader2, Plus, Save, X, Zap } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  DEFAULT_PROBLEM_CONFIG, detailToString, isoToLocalInput, localToIso, withDefaults, Section,
+} from './admin/shared';
+import { OverviewForm, ProblemsForm, ScoringForm, LeaderboardForm, SettingsForm } from './admin/FormTabs';
+import {
+  LifecycleBar, ScoringOps, ParticipantsTab, AnnouncementsTab, LeaderboardOps,
+} from './admin/OpsTabs';
 
-const DIFFICULTY_COLOR = {
-  Easy: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
-  Medium: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30',
-  Hard: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30',
-};
-
-function detailToString(err, fallback) {
-  const d = err?.response?.data?.detail ?? err?.message;
-  if (typeof d === 'string') return d;
-  if (Array.isArray(d)) return d.map((x) => x?.msg || JSON.stringify(x)).join(', ');
-  if (d && typeof d === 'object') return d.message || d.msg || JSON.stringify(d);
-  return fallback;
+function defaultForm() {
+  const start = new Date();
+  start.setMinutes(0, 0, 0);
+  start.setHours(start.getHours() + 1);
+  const end = new Date(start.getTime() + 2 * 3600 * 1000);
+  return {
+    name: '', start: isoToLocalInput(start.toISOString()), end: isoToLocalInput(end.toISOString()),
+    state: 'published', settings: withDefaults({}), problems: [],
+  };
 }
 
-// Local datetime input (yyyy-MM-ddTHH:mm) <-> ISO string, in the local tz —
-// same convention Contest.jsx's original create form already used.
-function isoToLocalInput(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const parseList = (txt) => {
+  const arr = (txt || '').split(',').map((x) => x.trim()).filter(Boolean).map(Number).filter((n) => Number.isFinite(n));
+  return arr.length ? arr : null;
+};
+
+// Turn the editable form into the API payload (settings schema lives in
+// services/contest_settings.py; the server validates everything again).
+function toPayload(form) {
+  const s = JSON.parse(JSON.stringify(form.settings));
+  s.branding.banner_url = (s.branding.banner_url || '').trim() || null;
+  if (s.registration.access !== 'code') s.registration.access_code = null;
+  const problem_configs = {};
+  for (const p of form.problems) {
+    const { ...cfg } = p.config;
+    cfg.test_weights = parseList(p._weights);
+    cfg.visible_tests = parseList(p._visible)?.map((n) => Math.trunc(n)) || null;
+    problem_configs[p.id] = cfg;
+  }
+  return {
+    name: form.name.trim(), start_at: localToIso(form.start), end_at: localToIso(form.end), state: form.state,
+    settings: s, problem_ids: form.problems.map((p) => p.id), problem_configs,
+  };
+}
+
+function QuickCreate({ onCreated }) {
+  const [templates, setTemplates] = useState([]);
+  const [tpl, setTpl] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.get('/contest/templates').then(({ data }) => { setTemplates(data.items || []); setTpl(data.items?.[0]?.id || ''); }).catch(() => {});
+  }, []);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post('/contest/from-template', { template_id: tpl, name: name.trim() });
+      toast.success('Contest created and live — customise it any time');
+      onCreated?.(data.id);
+    } catch (e) {
+      toast.error(detailToString(e, 'Failed to create contest'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section title="Quick create from template" hint="Pick a template, name it, go live in one click. Everything stays editable afterwards.">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" data-testid="contest-templates">
+        {templates.map((t) => (
+          <button
+            key={t.id} type="button" onClick={() => setTpl(t.id)} data-testid={`contest-template-${t.id}`}
+            className={`text-left rounded-md border px-3 py-2 transition-colors ${tpl === t.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-accent/50'}`}
+          >
+            <div className="text-sm font-medium">{t.name}</div>
+            <div className="text-[11px] text-muted-foreground">{t.description}</div>
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <Input placeholder="Contest name" value={name} onChange={(e) => setName(e.target.value)} data-testid="contest-quick-name" />
+        <Button onClick={go} disabled={busy || !name.trim() || !tpl} data-testid="contest-quick-create">
+          {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />} Create & go live
+        </Button>
+      </div>
+    </Section>
+  );
 }
 
 /**
- * Admin-only contest create/edit form. Wired to the real POST/PATCH
- * /api/contest endpoints — no client-side-only mock state. The problem
- * picker reuses /api/practice/roadmap (the same source Roadmap.jsx renders
- * from) purely for its `step` grouping, so an admin sees the exact same
- * topic buckets a candidate would.
+ * Admin console for one contest (or the "create" flow). Wired to the real
+ * /api/contest endpoints — no client-side-only mock state. Tabs: Overview,
+ * Problems, Scoring, Participants, Leaderboard, Announcements, Settings. The
+ * form tabs share one `form` object saved with a single PATCH/POST; the
+ * Participants / Announcements / Leaderboard-ops / Scoring-ops sections act
+ * immediately and need an existing contest.
  *
- * `editingContest`: the currently-selected contest's detail payload (from
- * GET /contest/{id}) to prefill for editing, or null to create a new one.
+ * `editingContest`: the selected contest's public payload (only its id is
+ * used; the full editable state is fetched from GET /contest/{id}/admin), or
+ * null to create a new contest.
  */
-export default function ContestAdminPanel({ editingContest, onSaved, onClose }) {
-  const [roadmap, setRoadmap] = useState([]);
-  const [loadingProblems, setLoadingProblems] = useState(true);
-
-  const [name, setName] = useState('');
-  const [startAt, setStartAt] = useState('');
-  const [endAt, setEndAt] = useState('');
-  const [selected, setSelected] = useState(() => new Set());
+export default function ContestAdminPanel({ editingContest, onSaved, onClose, onRefresh, onDeleted }) {
+  const [bank, setBank] = useState([]);
+  const [admin, setAdmin] = useState(null);
+  const [form, setForm] = useState(defaultForm);
+  const [loading, setLoading] = useState(Boolean(editingContest));
   const [saving, setSaving] = useState(false);
-
+  const [tab, setTab] = useState('overview');
   const isEdit = Boolean(editingContest);
+  const contestId = editingContest?.id;
 
   useEffect(() => {
-    (async () => {
-      setLoadingProblems(true);
-      try {
-        const { data } = await api.get('/practice/roadmap');
-        setRoadmap(data.items || []);
-      } catch (e) {
-        toast.error(detailToString(e, 'Failed to load the problem bank'));
-      } finally {
-        setLoadingProblems(false);
-      }
-    })();
+    api.get('/practice/roadmap')
+      .then(({ data }) => setBank((data.items || []).filter((i) => i.question_type === 'code')))
+      .catch((e) => toast.error(detailToString(e, 'Failed to load the problem bank')));
   }, []);
 
-  useEffect(() => {
-    if (editingContest) {
-      setName(editingContest.name || '');
-      setStartAt(isoToLocalInput(editingContest.start_at));
-      setEndAt(isoToLocalInput(editingContest.end_at));
-      setSelected(new Set((editingContest.problems || []).map((p) => p.id)));
-    } else {
-      setName('');
-      setStartAt('');
-      setEndAt('');
-      setSelected(new Set());
+  const load = useCallback(async () => {
+    if (!contestId) { setAdmin(null); setForm(defaultForm()); return; }
+    try {
+      const { data } = await api.get(`/contest/${contestId}/admin`);
+      setAdmin(data);
+      setForm({
+        name: data.name, start: isoToLocalInput(data.start_at), end: isoToLocalInput(data.end_at), state: data.state || 'published',
+        settings: withDefaults(data.settings),
+        problems: data.problem_ids.map((id) => {
+          const cfg = { ...DEFAULT_PROBLEM_CONFIG, ...(data.problem_configs?.[id] || {}) };
+          const b = bank.find((x) => x.id === id);
+          return {
+            id, title: b?.title || id, difficulty: b?.difficulty || '', config: cfg,
+            _weights: (cfg.test_weights || []).join(','), _visible: (cfg.visible_tests || []).join(','),
+          };
+        }),
+      });
+    } catch (e) {
+      toast.error(detailToString(e, 'Failed to load contest'));
+    } finally {
+      setLoading(false);
     }
-  }, [editingContest]);
+    // bank is only used for display titles; re-load when it arrives
+  }, [contestId, bank]);
+  useEffect(() => { load(); }, [load]);
 
-  const groups = useMemo(() => {
-    const out = [];
-    const byStep = new Map();
-    for (const item of roadmap) {
-      if (item.question_type !== 'code') continue; // contest submissions only support code problems
-      if (!byStep.has(item.step)) {
-        const bucket = { step: item.step, items: [] };
-        byStep.set(item.step, bucket);
-        out.push(bucket);
-      }
-      byStep.get(item.step).items.push(item);
-    }
-    return out;
-  }, [roadmap]);
-
-  const toggleProblem = (id) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const canSave = name.trim() && startAt && endAt && selected.size > 0 && !saving;
+  const canSave = form.name.trim() && form.start && form.end && form.problems.length > 0 && !saving;
 
   const save = async () => {
     if (!canSave) return;
     setSaving(true);
     try {
-      const payload = {
-        name: name.trim(),
-        start_at: new Date(startAt).toISOString(),
-        end_at: new Date(endAt).toISOString(),
-        problem_ids: [...selected],
-      };
+      const payload = toPayload(form);
       if (isEdit) {
-        await api.patch(`/contest/${editingContest.id}`, payload);
-        toast.success('Contest updated');
+        await api.patch(`/contest/${contestId}`, payload);
+        toast.success('Changes saved');
+        await load();
+        onRefresh?.();
       } else {
-        const { data } = await api.post('/contest/', payload);
+        const { data } = await api.post('/contest/', { ...payload, ai_landing: false });
         toast.success('Contest created');
         onSaved?.(data.id);
-        return;
       }
-      onSaved?.(editingContest.id);
     } catch (e) {
-      toast.error(detailToString(e, isEdit ? 'Failed to update contest' : 'Failed to create contest'));
+      toast.error(detailToString(e, isEdit ? 'Failed to save changes' : 'Failed to create contest'));
     } finally {
       setSaving(false);
     }
   };
 
+  const needsContest = (node) => (isEdit ? node : (
+    <p className="text-sm text-muted-foreground py-6 text-center">Create the contest first — this section manages a contest that already exists.</p>
+  ));
+  const isLive = admin && (admin.status === 'live' || admin.status === 'paused');
+
   return (
     <div className="mb-6 rounded-lg border border-border bg-card p-4 space-y-4" data-testid="contest-admin-form">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-medium">{isEdit ? `Edit "${editingContest.name}"` : 'Create a new contest'}</div>
+        <div className="text-sm font-medium">{isEdit ? `Manage "${editingContest.name}"` : 'Create a new contest'}</div>
         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} data-testid="contest-admin-close">
           <X className="h-4 w-4" />
         </Button>
       </div>
 
-      <div className="space-y-1">
-        <Label className="text-xs text-muted-foreground">Contest name</Label>
-        <Input placeholder="Contest name" value={name} onChange={(e) => setName(e.target.value)} data-testid="contest-new-name" />
-      </div>
+      {!isEdit && <QuickCreate onCreated={(id) => onSaved?.(id)} />}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Start time</Label>
-          <Input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} data-testid="contest-new-start" />
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground py-6 justify-center">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
         </div>
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">End time</Label>
-          <Input type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} data-testid="contest-new-end" />
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs text-muted-foreground">
-            Problems ({selected.size} selected)
-          </Label>
-        </div>
-        {loadingProblems ? (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground py-4 justify-center">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading problem bank…
-          </div>
-        ) : (
-          <div className="max-h-72 overflow-y-auto rounded-md border border-border divide-y divide-border" data-testid="contest-problem-picker">
-            {groups.map((group) => (
-              <div key={group.step} className="p-2.5" data-testid={`contest-problem-picker-group-${group.step}`}>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                  {group.step}
-                </div>
-                <div className="space-y-1.5">
-                  {group.items.map((p) => (
-                    <label
-                      key={p.id}
-                      className="flex items-center gap-2.5 rounded px-1.5 py-1 hover:bg-accent/50 cursor-pointer"
-                      data-testid={`contest-problem-picker-item-${p.id}`}
-                    >
-                      <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggleProblem(p.id)} />
-                      <span className="flex-1 text-sm truncate">{p.title}</span>
-                      <Badge variant="outline" className={DIFFICULTY_COLOR[p.difficulty] || ''}>{p.difficulty}</Badge>
-                    </label>
-                  ))}
-                </div>
-              </div>
+      ) : (
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList className="flex flex-wrap h-auto" data-testid="contest-admin-tabs">
+            {[['overview', 'Overview'], ['problems', 'Problems'], ['scoring', 'Scoring'], ['participants', 'Participants'],
+              ['leaderboard', 'Leaderboard'], ['announcements', 'Announcements'], ['settings', 'Settings']].map(([v, l]) => (
+              <TabsTrigger key={v} value={v} data-testid={`contest-tab-${v}`}>{l}</TabsTrigger>
             ))}
-            {groups.length === 0 && (
-              <p className="text-xs text-muted-foreground p-3 text-center">No problems available.</p>
-            )}
-          </div>
-        )}
-      </div>
+          </TabsList>
 
-      <Button size="sm" onClick={save} disabled={!canSave} data-testid="contest-admin-save">
-        {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : isEdit ? <Save className="h-4 w-4 mr-2" /> : <Plus className="h-4 w-4 mr-2" />}
-        {isEdit ? 'Save changes' : 'Create contest'}
-      </Button>
+          <TabsContent value="overview" className="space-y-4 pt-3">
+            <OverviewForm form={form} setForm={setForm} />
+            {isEdit && admin && <LifecycleBar admin={admin} onChanged={async () => { await load(); onRefresh?.(); }} onDeleted={onDeleted} />}
+          </TabsContent>
+          <TabsContent value="problems" className="pt-3"><ProblemsForm form={form} setForm={setForm} bank={bank} isLive={isLive} /></TabsContent>
+          <TabsContent value="scoring" className="space-y-4 pt-3">
+            <ScoringForm form={form} setForm={setForm} />
+            {needsContest(<ScoringOps contestId={contestId} problems={form.problems} />)}
+          </TabsContent>
+          <TabsContent value="participants" className="pt-3">{needsContest(<ParticipantsTab contestId={contestId} onChanged={onRefresh} />)}</TabsContent>
+          <TabsContent value="leaderboard" className="space-y-4 pt-3">
+            <LeaderboardForm form={form} setForm={setForm} />
+            {needsContest(<LeaderboardOps contestId={contestId} onChanged={onRefresh} />)}
+          </TabsContent>
+          <TabsContent value="announcements" className="pt-3">{needsContest(<AnnouncementsTab contestId={contestId} />)}</TabsContent>
+          <TabsContent value="settings" className="pt-3"><SettingsForm form={form} setForm={setForm} /></TabsContent>
+        </Tabs>
+      )}
+
+      {!loading && (
+        <div className="flex items-center gap-3 pt-1 border-t border-border">
+          <Button size="sm" onClick={save} disabled={!canSave} data-testid="contest-admin-save">
+            {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : isEdit ? <Save className="h-4 w-4 mr-2" /> : <Plus className="h-4 w-4 mr-2" />}
+            {isEdit ? 'Save changes' : 'Create contest'}
+          </Button>
+          <span className="text-[11px] text-muted-foreground">
+            Saves Overview, Problems, Scoring, Leaderboard and Settings together{isLive ? ' — applied live to participants immediately' : ''}.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

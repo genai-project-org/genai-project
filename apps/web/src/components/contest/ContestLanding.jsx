@@ -38,7 +38,7 @@ const REG_MODES = [
   { key: 'solo', label: 'Register solo', Icon: UserIcon },
 ];
 
-function CreateTeamForm({ contestId, onRegistered }) {
+function CreateTeamForm({ contestId, onRegistered, accessCode, reg }) {
   const [teamName, setTeamName] = useState('');
   const [teammateEmails, setTeammateEmails] = useState('');
   const [openToJoin, setOpenToJoin] = useState(false);
@@ -49,7 +49,7 @@ function CreateTeamForm({ contestId, onRegistered }) {
     setCreating(true);
     try {
       const member_emails = teammateEmails.split(',').map((e) => e.trim()).filter(Boolean);
-      await api.post(`/contest/${contestId}/teams`, { name: teamName.trim(), member_emails, open_to_join: openToJoin });
+      await api.post(`/contest/${contestId}/teams`, { name: teamName.trim(), member_emails, open_to_join: openToJoin, access_code: accessCode || undefined });
       toast.success('Team registered!');
       onRegistered?.();
     } catch (e) {
@@ -72,7 +72,7 @@ function CreateTeamForm({ contestId, onRegistered }) {
         <Checkbox checked={openToJoin} onCheckedChange={(v) => setOpenToJoin(Boolean(v))} data-testid="contest-landing-open-to-join" />
         Leave this team open so other solo registrants can join it later
       </label>
-      <p className="text-xs text-muted-foreground">A team has 1-3 members — you're added automatically, teammates are optional.</p>
+      <p className="text-xs text-muted-foreground">A team has {reg?.min_team_size ?? 1}-{reg?.max_team_size ?? 3} members — you're added automatically{(reg?.min_team_size ?? 1) > 1 ? '; invite teammates by email or leave your team open for others to join' : ', teammates are optional'}.</p>
       <Button onClick={create} disabled={creating || !teamName.trim()} data-testid="contest-landing-register-btn">
         {creating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
         Create team
@@ -81,7 +81,7 @@ function CreateTeamForm({ contestId, onRegistered }) {
   );
 }
 
-function JoinOpenTeamForm({ contestId, onRegistered }) {
+function JoinOpenTeamForm({ contestId, onRegistered, accessCode }) {
   const [teams, setTeams] = useState(null);
   const [loading, setLoading] = useState(true);
   const [joiningId, setJoiningId] = useState(null);
@@ -105,7 +105,7 @@ function JoinOpenTeamForm({ contestId, onRegistered }) {
     if (joiningId) return;
     setJoiningId(teamId);
     try {
-      await api.post(`/contest/${contestId}/teams/${teamId}/join`);
+      await api.post(`/contest/${contestId}/teams/${teamId}/join`, { access_code: accessCode || undefined });
       toast.success('Joined the team!');
       onRegistered?.();
     } catch (e) {
@@ -136,7 +136,7 @@ function JoinOpenTeamForm({ contestId, onRegistered }) {
       {teams.map((t) => (
         <div key={t.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-2" data-testid={`contest-landing-open-team-${t.id}`}>
           <span className="flex-1 text-sm font-medium truncate">{t.name}</span>
-          <Badge variant="secondary" className="shrink-0 text-[11px]">{t.member_count}/3 members</Badge>
+          <Badge variant="secondary" className="shrink-0 text-[11px]">{t.member_count}/{t.max_size || 3} members</Badge>
           <Button
             size="sm" variant="outline"
             onClick={() => join(t.id)} disabled={joiningId !== null}
@@ -150,7 +150,7 @@ function JoinOpenTeamForm({ contestId, onRegistered }) {
   );
 }
 
-function SoloRegisterForm({ contestId, defaultName, onRegistered }) {
+function SoloRegisterForm({ contestId, defaultName, onRegistered, accessCode }) {
   const [registering, setRegistering] = useState(false);
 
   const registerSolo = async () => {
@@ -161,6 +161,7 @@ function SoloRegisterForm({ contestId, defaultName, onRegistered }) {
         name: defaultName ? `${defaultName}'s Team` : 'Solo Team',
         member_emails: [],
         open_to_join: false,
+        access_code: accessCode || undefined,
       });
       toast.success("You're registered!");
       onRegistered?.();
@@ -191,21 +192,48 @@ function SoloRegisterForm({ contestId, defaultName, onRegistered }) {
  * needed, or register solo outright. A single form that assumed you already
  * had 1-2 named teammates in hand was the actual UX problem this replaces.
  */
-function RegistrationOptions({ contestId, status, userName, onRegistered }) {
-  const [mode, setMode] = useState('create');
+function RegistrationOptions({ contest, userName, onRegistered }) {
+  const contestId = contest.id;
+  const reg = contest.registration || {};
+  const available = REG_MODES.filter(({ key }) => (reg.mode === 'solo' ? key === 'solo' : reg.mode === 'team' ? key !== 'solo' : true));
+  const [mode, setMode] = useState(available[0]?.key || 'create');
+  const [accessCode, setAccessCode] = useState('');
 
-  if (status === 'ended') {
+  if (contest.status === 'ended') {
     return (
       <p className="text-sm text-muted-foreground" data-testid="contest-landing-closed">
         Registration is closed — this contest has already ended.
       </p>
     );
   }
+  if (reg.open === false) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="contest-landing-closed">
+        {reg.reason || 'Registration is closed.'}
+      </p>
+    );
+  }
+  if (reg.access === 'invite_only' && contest.invited === false) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="contest-landing-invite-only">
+        This contest is invite-only. Sign in with the email address you were invited on to register.
+      </p>
+    );
+  }
 
   return (
     <div data-testid="contest-landing-registration-options">
-      <div className="grid grid-cols-3 gap-1.5 mb-3 rounded-lg bg-muted p-1">
-        {REG_MODES.map(({ key, label, Icon }) => (
+      {reg.access === 'code' && (
+        <Input
+          className="mb-3" placeholder="Access code" value={accessCode}
+          onChange={(e) => setAccessCode(e.target.value)} data-testid="contest-landing-access-code"
+        />
+      )}
+      {reg.spots_left != null && (
+        <p className="text-[11px] text-muted-foreground mb-2">{reg.spots_left} spot(s) left</p>
+      )}
+      <div className={cn('grid gap-1.5 mb-3 rounded-lg bg-muted p-1', available.length === 1 ? 'grid-cols-1' : available.length === 2 ? 'grid-cols-2' : 'grid-cols-3')}>
+        {available.map(({ key, label, Icon }) => (
           <button
             key={key}
             type="button"
@@ -221,9 +249,9 @@ function RegistrationOptions({ contestId, status, userName, onRegistered }) {
           </button>
         ))}
       </div>
-      {mode === 'create' && <CreateTeamForm contestId={contestId} onRegistered={onRegistered} />}
-      {mode === 'join' && <JoinOpenTeamForm contestId={contestId} onRegistered={onRegistered} />}
-      {mode === 'solo' && <SoloRegisterForm contestId={contestId} defaultName={userName} onRegistered={onRegistered} />}
+      {mode === 'create' && <CreateTeamForm contestId={contestId} onRegistered={onRegistered} accessCode={accessCode} reg={reg} />}
+      {mode === 'join' && <JoinOpenTeamForm contestId={contestId} onRegistered={onRegistered} accessCode={accessCode} />}
+      {mode === 'solo' && <SoloRegisterForm contestId={contestId} defaultName={userName} onRegistered={onRegistered} accessCode={accessCode} />}
     </div>
   );
 }
@@ -253,7 +281,7 @@ function CenteredLayout({ copy, accent, contest, userName, onRegistered }) {
         <Highlights highlights={copy.highlights} accent={accent} />
       </div>
       <div className="max-w-sm mx-auto rounded-lg border border-border bg-card p-4 text-left">
-        <RegistrationOptions contestId={contest.id} status={contest.status} userName={userName} onRegistered={onRegistered} />
+        <RegistrationOptions contest={contest} userName={userName} onRegistered={onRegistered} />
       </div>
     </div>
   );
@@ -275,7 +303,7 @@ function SplitLayout({ copy, accent, contest, userName, onRegistered }) {
           <div className="flex items-center gap-1.5 font-medium mb-3">
             <Users className={cn('h-4 w-4', accent.text)} /> Register your team
           </div>
-          <RegistrationOptions contestId={contest.id} status={contest.status} userName={userName} onRegistered={onRegistered} />
+          <RegistrationOptions contest={contest} userName={userName} onRegistered={onRegistered} />
         </div>
       </div>
     </div>
@@ -304,7 +332,7 @@ function CardsLayout({ copy, accent, contest, userName, onRegistered }) {
         <div className="flex items-center gap-1.5 font-medium mb-3 justify-center">
           <Users className={cn('h-4 w-4', accent.text)} /> Register your team
         </div>
-        <RegistrationOptions contestId={contest.id} status={contest.status} userName={userName} onRegistered={onRegistered} />
+        <RegistrationOptions contest={contest} userName={userName} onRegistered={onRegistered} />
       </div>
     </div>
   );
@@ -320,18 +348,29 @@ const LAYOUTS = { centered: CenteredLayout, split: SplitLayout, cards: CardsLayo
  * layout) with zero raw/untrusted markup ever executed.
  */
 export default function ContestLanding({ contest, userName, onRegistered }) {
-  const copy = contest.landing_page || {
+  const branding = contest.settings?.branding || {};
+  const base = contest.landing_page || {
     headline: `Register for ${contest.name}`,
     tagline: 'A free, team-based coding contest.',
     highlights: ['Free entry', 'Team-based', 'Live leaderboard'],
     accent: 'indigo',
     layout: 'centered',
   };
+  // Admin-authored headline/tagline (Settings > Branding) win over the generated copy.
+  const copy = { ...base, headline: branding.headline || base.headline, tagline: branding.tagline || base.tagline };
+  const prizes = contest.settings?.prizes || [];
   const accent = accentOf(copy.accent);
   const Layout = LAYOUTS[copy.layout] || CenteredLayout;
 
   return (
     <div data-testid="contest-landing-page">
+      {branding.banner_url && (
+        <img
+          src={branding.banner_url} alt=""
+          className="w-full max-h-56 object-cover rounded-xl border border-border mb-4"
+          data-testid="contest-landing-banner"
+        />
+      )}
       <Layout copy={copy} accent={accent} contest={contest} userName={userName} onRegistered={onRegistered} />
 
       <div className="mt-6 rounded-lg border border-border bg-card p-5" data-testid="contest-landing-problems">
@@ -344,10 +383,39 @@ export default function ContestLanding({ contest, userName, onRegistered }) {
         </div>
         <div className="flex flex-wrap gap-1.5">
           {contest.problems.map((p) => (
-            <Badge key={p.id} variant="secondary">{p.title}</Badge>
+            <Badge key={p.id} variant="secondary">{p.locked ? 'Locked problem' : p.title}{p.points ? ` · ${p.points} pts` : ''}</Badge>
           ))}
         </div>
       </div>
+
+      {(branding.description || branding.rules_text || prizes.length > 0) && (
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {(branding.description || branding.rules_text) && (
+            <div className="rounded-lg border border-border bg-card p-5" data-testid="contest-landing-rules">
+              {branding.description && <p className="text-sm mb-3">{branding.description}</p>}
+              {branding.rules_text && (
+                <>
+                  <div className="font-medium text-sm mb-1.5">Rules</div>
+                  <p className="text-xs text-muted-foreground whitespace-pre-line">{branding.rules_text}</p>
+                </>
+              )}
+            </div>
+          )}
+          {prizes.length > 0 && (
+            <div className="rounded-lg border border-border bg-card p-5" data-testid="contest-landing-prizes">
+              <div className="font-medium text-sm mb-2">Prizes</div>
+              <ul className="space-y-1.5 text-sm">
+                {prizes.map((t, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <Badge variant="outline" className="shrink-0">{t.from_rank === t.to_rank ? `#${t.from_rank}` : `#${t.from_rank}-${t.to_rank}`}</Badge>
+                    <span><span className="font-medium">{t.title}</span>{t.prize ? ` — ${t.prize}` : ''}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

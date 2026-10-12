@@ -4,18 +4,16 @@ import { useNavigate } from 'react-router-dom';
 import api from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
-  Loader2, Trophy, Users, Clock, Download, Award, Code2, ShieldCheck, Pencil, Octagon,
+  Loader2, Trophy, Users, Clock, Download, Award, Code2, ShieldCheck, Pencil, Megaphone, Lock, Snowflake,
+  EyeOff, MessageCircleQuestion, ScrollText,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import ContestAdminPanel from '@/components/contest/ContestAdminPanel';
 import ContestLanding from '@/components/contest/ContestLanding';
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
 
 // Same flattening trick Practice.jsx/Roadmap.jsx use — FastAPI's 402/429
 // responses carry structured `detail` objects, everything else a plain string.
@@ -34,6 +32,8 @@ const DIFFICULTY_COLOR = {
 };
 
 const STATUS_BADGE = {
+  draft: 'bg-muted text-muted-foreground border-border',
+  paused: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30',
   upcoming: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30',
   live: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
   ended: 'bg-muted text-muted-foreground border-border',
@@ -72,6 +72,10 @@ export default function Contest() {
   const [contest, setContest] = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
   const [myStats, setMyStats] = useState(null);
+  const [announcements, setAnnouncements] = useState([]);
+  const [clarifications, setClarifications] = useState([]);
+  const [question, setQuestion] = useState('');
+  const [askingQ, setAskingQ] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [now, setNow] = useState(() => Date.now());
@@ -80,7 +84,6 @@ export default function Contest() {
   const [adminPanelMode, setAdminPanelMode] = useState(null);
 
   const [downloading, setDownloading] = useState(null); // 'certificate' | 'stats-card' | null
-  const [stopping, setStopping] = useState(false);
 
   // Tick every second for the live countdown.
   useEffect(() => {
@@ -115,14 +118,18 @@ export default function Contest() {
     setLoading(true);
     setError('');
     try {
-      const [detailRes, lbRes, statsRes] = await Promise.all([
+      const [detailRes, lbRes, statsRes, annRes, clarRes] = await Promise.all([
         api.get(`/contest/${id}`),
         api.get(`/contest/${id}/leaderboard`),
         api.get(`/contest/${id}/my-stats`),
+        api.get(`/contest/${id}/announcements`),
+        api.get(`/contest/${id}/clarifications`),
       ]);
       setContest(detailRes.data);
       setLeaderboard(lbRes.data);
       setMyStats(statsRes.data);
+      setAnnouncements(annRes.data.items || []);
+      setClarifications(clarRes.data.items || []);
     } catch (e) {
       setError(detailToString(e, 'Failed to load contest'));
     } finally {
@@ -141,12 +148,18 @@ export default function Contest() {
     if (!contestId || !hasTeam) return undefined;
     const t = setInterval(async () => {
       try {
-        const [lbRes, statsRes] = await Promise.all([
+        const [detailRes, lbRes, statsRes, annRes, clarRes] = await Promise.all([
+          api.get(`/contest/${contestId}`),
           api.get(`/contest/${contestId}/leaderboard`),
           api.get(`/contest/${contestId}/my-stats`),
+          api.get(`/contest/${contestId}/announcements`),
+          api.get(`/contest/${contestId}/clarifications`),
         ]);
+        setContest(detailRes.data);
         setLeaderboard(lbRes.data);
         setMyStats(statsRes.data);
+        setAnnouncements(annRes.data.items || []);
+        setClarifications(clarRes.data.items || []);
       } catch {
         // transient: the next tick will retry
       }
@@ -158,7 +171,9 @@ export default function Contest() {
     if (!contest) return null;
     const start = new Date(contest.start_at).getTime();
     const end = new Date(contest.end_at).getTime();
+    if (contest.status === 'ended') return { label: 'Ended', ms: 0, status: 'ended' };
     if (now < start) return { label: 'Starts in', ms: start - now, status: 'upcoming' };
+    if (contest.status === 'paused') return { label: 'Paused — clock stopped', ms: 0, status: 'paused' };
     if (now > end) return { label: 'Ended', ms: 0, status: 'ended' };
     return { label: 'Ends in', ms: end - now, status: 'live' };
   }, [contest, now]);
@@ -175,17 +190,19 @@ export default function Contest() {
     }
   };
 
-  const stopContestNow = async () => {
-    if (stopping) return;
-    setStopping(true);
+  const askQuestion = async () => {
+    if (!question.trim() || askingQ) return;
+    setAskingQ(true);
     try {
-      await api.post(`/contest/${contestId}/stop`);
-      toast.success('Contest stopped — submissions are closed immediately.');
-      await loadContestData(contestId);
+      await api.post(`/contest/${contestId}/clarifications`, { question: question.trim() });
+      setQuestion('');
+      const { data } = await api.get(`/contest/${contestId}/clarifications`);
+      setClarifications(data.items || []);
+      toast.success('Question sent to the organisers');
     } catch (e) {
-      toast.error(detailToString(e, 'Failed to stop contest'));
+      toast.error(detailToString(e, 'Could not send your question'));
     } finally {
-      setStopping(false);
+      setAskingQ(false);
     }
   };
 
@@ -223,38 +240,8 @@ export default function Contest() {
                 onClick={() => setAdminPanelMode((v) => (v === 'edit' ? null : 'edit'))}
                 data-testid="contest-admin-edit-toggle"
               >
-                <Pencil className="h-4 w-4 mr-2" /> {adminPanelMode === 'edit' ? 'Close' : 'Edit Contest'}
+                <Pencil className="h-4 w-4 mr-2" /> {adminPanelMode === 'edit' ? 'Close' : 'Manage Contest'}
               </Button>
-            )}
-            {contest && contest.status !== 'ended' && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" size="sm" data-testid="contest-stop-btn">
-                    <Octagon className="h-4 w-4 mr-2" /> Stop Contest
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Stop "{contest.name}" now?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This immediately ends the contest for every participant, regardless of its scheduled end
-                      time — submissions are rejected right away and this cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel data-testid="contest-stop-cancel">Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={stopContestNow}
-                      disabled={stopping}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      data-testid="contest-stop-confirm"
-                    >
-                      {stopping ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                      Stop contest now
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
             )}
             <Button
               variant="outline" size="sm"
@@ -273,7 +260,17 @@ export default function Contest() {
         <ContestAdminPanel editingContest={null} onSaved={onContestSaved} onClose={() => setAdminPanelMode(null)} />
       )}
       {user?.role === 'admin' && adminPanelMode === 'edit' && contest && (
-        <ContestAdminPanel editingContest={contest} onSaved={onContestSaved} onClose={() => setAdminPanelMode(null)} />
+        <ContestAdminPanel
+          key={contest.id} editingContest={contest} onSaved={onContestSaved} onClose={() => setAdminPanelMode(null)}
+          onRefresh={() => loadContestData(contestId)}
+          onDeleted={async () => {
+            setAdminPanelMode(null);
+            const { data: listData } = await api.get('/contest/');
+            setContests(listData.items || []);
+            setContest(null);
+            setContestId(listData.items?.[0]?.id ?? null);
+          }}
+        />
       )}
 
       {contests.length > 1 && (
@@ -319,6 +316,20 @@ export default function Contest() {
 
       {!loading && contest && contest.my_team && (
         <div className="space-y-6">
+          {/* Live organiser announcements (pinned first) */}
+          {announcements.length > 0 && (
+            <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 space-y-2" data-testid="contest-announcements">
+              <div className="flex items-center gap-1.5 text-sm font-medium"><Megaphone className="h-4 w-4 text-primary" /> Announcements</div>
+              {announcements.slice(0, 5).map((a) => (
+                <div key={a.id} className="text-sm flex items-start gap-2" data-testid="contest-announcement">
+                  {a.pinned && <Badge variant="secondary" className="shrink-0">pinned</Badge>}
+                  <span className="flex-1">{a.text}</span>
+                  <span className="text-[11px] text-muted-foreground shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Window status */}
           <div className="rounded-lg border border-border bg-card p-5 flex flex-wrap items-center justify-between gap-4" data-testid="contest-window-panel">
             <div>
@@ -332,7 +343,9 @@ export default function Contest() {
             </div>
             <div className="flex items-center gap-2 text-lg font-display font-semibold" data-testid="contest-countdown">
               <Clock className="h-5 w-5 text-primary" />
-              {windowInfo?.status === 'ended' ? 'Contest has ended' : `${windowInfo?.label}: ${fmtDuration(windowInfo?.ms || 0)}`}
+              {windowInfo?.status === 'ended' ? 'Contest has ended'
+                : windowInfo?.status === 'paused' ? windowInfo.label
+                : `${windowInfo?.label}: ${fmtDuration(windowInfo?.ms || 0)}`}
             </div>
           </div>
 
@@ -343,18 +356,39 @@ export default function Contest() {
                 <Code2 className="h-4 w-4 text-muted-foreground" /> Problem set
               </div>
               <div className="space-y-2">
-                {contest.problems.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => navigate(`/practice?problem=${p.id}&contest=${contestId}`)}
-                    className="w-full flex items-center gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-accent/50 transition-colors"
-                    data-testid={`contest-problem-${p.id}`}
-                  >
-                    <span className="flex-1 text-sm font-medium">{p.title}</span>
-                    <Badge variant="outline" className={DIFFICULTY_COLOR[p.difficulty] || ''}>{p.difficulty}</Badge>
-                  </button>
-                ))}
+                {contest.problems.map((p) => {
+                  const noAttempts = p.max_attempts > 0 && p.attempts >= p.max_attempts;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={p.locked}
+                      onClick={() => navigate(`/practice?problem=${p.id}&contest=${contestId}`)}
+                      className={cn(
+                        'w-full flex items-center gap-3 rounded-md border border-border px-3 py-2 text-left transition-colors',
+                        p.locked ? 'opacity-60 cursor-not-allowed' : 'hover:bg-accent/50'
+                      )}
+                      data-testid={`contest-problem-${p.id}`}
+                    >
+                      {p.locked && <Lock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+                      <span className="flex-1 text-sm font-medium">
+                        {p.locked ? 'Locked problem' : p.title}
+                        {p.locked && p.release_at && (
+                          <span className="block text-[11px] font-normal text-muted-foreground">
+                            Unlocks {new Date(p.release_at).toLocaleString()} ({fmtDuration(new Date(p.release_at).getTime() - now)})
+                          </span>
+                        )}
+                        {!p.locked && p.max_attempts > 0 && (
+                          <span className={cn('block text-[11px] font-normal', noAttempts ? 'text-destructive' : 'text-muted-foreground')}>
+                            {Math.max(0, p.max_attempts - p.attempts)} of {p.max_attempts} attempts left
+                          </span>
+                        )}
+                      </span>
+                      {p.points > 0 && <span className="text-xs tabular-nums text-muted-foreground">{p.points} pts</span>}
+                      {p.difficulty && <Badge variant="outline" className={DIFFICULTY_COLOR[p.difficulty] || ''}>{p.difficulty}</Badge>}
+                    </button>
+                  );
+                })}
               </div>
               <p className="text-xs text-muted-foreground mt-3">
                 Opens the code editor for that problem. Run checks the samples, Submit grades every test and counts on the leaderboard. Free, no credits charged.
@@ -394,8 +428,17 @@ export default function Contest() {
           <div className="rounded-lg border border-border bg-card p-5" data-testid="contest-leaderboard">
             <div className="flex items-center gap-1.5 font-medium mb-3">
               <Trophy className="h-4 w-4 text-amber-500" /> Leaderboard
+              {leaderboard?.frozen && (
+                <Badge variant="secondary" className="ml-2" data-testid="contest-lb-frozen">
+                  <Snowflake className="h-3 w-3 mr-1" /> Frozen
+                </Badge>
+              )}
             </div>
-            {!leaderboard?.items?.length ? (
+            {leaderboard?.hidden ? (
+              <p className="text-sm text-muted-foreground py-6 text-center flex items-center justify-center gap-2" data-testid="contest-lb-hidden">
+                <EyeOff className="h-4 w-4" /> The organisers have hidden the leaderboard for now.
+              </p>
+            ) : !leaderboard?.items?.length ? (
               <p className="text-sm text-muted-foreground py-6 text-center">No team has solved a problem yet.</p>
             ) : (
               <div className="divide-y divide-border">
@@ -417,17 +460,56 @@ export default function Contest() {
                       {row.members.map((m) => m.name).join(', ')}
                     </span>
                     <Badge variant="secondary" className="shrink-0">{row.problems_solved} solved</Badge>
+                    {leaderboard.mode === 'points' && (
+                      <span className="w-16 text-right text-xs tabular-nums shrink-0" data-testid="contest-lb-score">{row.score} pts</span>
+                    )}
                     <span className="w-16 text-right text-xs text-muted-foreground tabular-nums shrink-0">
-                      {Math.floor(row.total_time_seconds / 60)}m
+                      {Math.floor((leaderboard.mode === 'points' ? row.total_time_seconds : row.penalty_seconds) / 60)}m
                     </span>
                   </div>
                 ))}
               </div>
             )}
             <p className="text-[11px] text-muted-foreground mt-3">
-              Ranked by distinct problems solved by the team, tie-broken by total time-to-solve — full standings, visible to every participant.
+              {leaderboard?.mode === 'points'
+                ? 'Ranked by total points (problem points, partial credit, bonuses and penalties).'
+                : 'Ranked by distinct problems solved by the team, tie-broken by total time plus wrong-submission penalties.'}
+              {leaderboard?.frozen ? ' Standings are frozen — final results are revealed by the organisers.' : ''}
             </p>
           </div>
+
+          {/* Rules, scoring summary and prizes */}
+          {(contest.settings?.branding?.rules_text || contest.settings?.prizes?.length > 0 || contest.settings?.branding?.description) && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-3" data-testid="contest-rules">
+              <div className="flex items-center gap-1.5 font-medium"><ScrollText className="h-4 w-4 text-muted-foreground" /> Rules &amp; prizes</div>
+              {contest.settings.branding.description && <p className="text-sm">{contest.settings.branding.description}</p>}
+              {contest.settings.branding.rules_text && <p className="text-xs text-muted-foreground whitespace-pre-line">{contest.settings.branding.rules_text}</p>}
+              {contest.settings.prizes?.length > 0 && (
+                <ul className="text-sm space-y-1">
+                  {contest.settings.prizes.map((t, i) => (
+                    <li key={i}><Badge variant="outline" className="mr-2">{t.from_rank === t.to_rank ? `#${t.from_rank}` : `#${t.from_rank}-${t.to_rank}`}</Badge><span className="font-medium">{t.title}</span>{t.prize ? ` — ${t.prize}` : ''}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Clarifications */}
+          {contest.settings?.clarifications_enabled && (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-3" data-testid="contest-clarifications">
+              <div className="flex items-center gap-1.5 font-medium"><MessageCircleQuestion className="h-4 w-4 text-muted-foreground" /> Ask the organisers</div>
+              <div className="flex gap-2">
+                <Input placeholder="Your question about the contest or a problem" value={question} maxLength={1000} onChange={(e) => setQuestion(e.target.value)} data-testid="contest-question-input" />
+                <Button size="sm" onClick={askQuestion} disabled={askingQ || !question.trim()} data-testid="contest-question-send">Send</Button>
+              </div>
+              {clarifications.map((c) => (
+                <div key={c.id} className="text-sm rounded-md border border-border px-3 py-2">
+                  <div>Q: {c.question}</div>
+                  {c.answer ? <div className="text-muted-foreground mt-0.5">A: {c.answer}</div> : <div className="text-[11px] text-muted-foreground mt-0.5">Awaiting an answer…</div>}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Certificate + stats card */}
           {myStats?.has_participated && (
