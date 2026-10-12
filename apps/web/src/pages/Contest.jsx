@@ -135,6 +135,25 @@ export default function Contest() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contestId]);
 
+  // Keep the leaderboard + personal stats live without a full reload.
+  const hasTeam = Boolean(contest?.my_team);
+  useEffect(() => {
+    if (!contestId || !hasTeam) return undefined;
+    const t = setInterval(async () => {
+      try {
+        const [lbRes, statsRes] = await Promise.all([
+          api.get(`/contest/${contestId}/leaderboard`),
+          api.get(`/contest/${contestId}/my-stats`),
+        ]);
+        setLeaderboard(lbRes.data);
+        setMyStats(statsRes.data);
+      } catch {
+        // transient: the next tick will retry
+      }
+    }, 15000);
+    return () => clearInterval(t);
+  }, [contestId, hasTeam]);
+
   const windowInfo = useMemo(() => {
     if (!contest) return null;
     const start = new Date(contest.start_at).getTime();
@@ -328,7 +347,7 @@ export default function Contest() {
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => navigate(`/practice?problem=${p.id}`)}
+                    onClick={() => navigate(`/practice?problem=${p.id}&contest=${contestId}`)}
                     className="w-full flex items-center gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-accent/50 transition-colors"
                     data-testid={`contest-problem-${p.id}`}
                   >
@@ -338,7 +357,7 @@ export default function Contest() {
                 ))}
               </div>
               <p className="text-xs text-muted-foreground mt-3">
-                Solve in the real Practice Engine editor, then submit there while this contest is live — contest submissions are free (no credits charged).
+                Opens the code editor for that problem. Run checks the samples, Submit grades every test and counts on the leaderboard. Free, no credits charged.
               </p>
             </div>
 
@@ -352,7 +371,21 @@ export default function Contest() {
                   "create a team" form here any more; that's ContestLanding's job. */}
               <div data-testid="contest-my-team">
                 <div className="text-lg font-semibold mb-1">{contest.my_team.name}</div>
-                <div className="text-xs text-muted-foreground">{contest.my_team.member_user_ids.length} member(s)</div>
+                <div className="text-xs text-muted-foreground mb-3">{contest.my_team.member_user_ids.length} member(s)</div>
+                {(() => {
+                  const row = leaderboard?.items?.find((r) => r.team_id === contest.my_team.id);
+                  if (!row) return null;
+                  return (
+                    <div className="space-y-1.5">
+                      <ul className="text-sm space-y-0.5">
+                        {row.members.map((m) => <li key={m.user_id}>{m.name}</li>)}
+                      </ul>
+                      <div className="text-xs text-muted-foreground pt-1">
+                        Rank #{row.rank} · {row.problems_solved}/{contest.problems.length} solved
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -370,8 +403,9 @@ export default function Contest() {
                   <div
                     key={row.team_id}
                     className={cn(
-                      'flex items-center gap-3 py-2.5 text-sm',
-                      row.rank <= 5 && 'font-medium'
+                      'flex items-center gap-3 py-2.5 px-2 text-sm rounded-md',
+                      row.rank <= 5 && 'font-medium',
+                      row.team_id === contest.my_team?.id && 'bg-primary/10'
                     )}
                     data-testid={`contest-leaderboard-row-${row.rank}`}
                   >

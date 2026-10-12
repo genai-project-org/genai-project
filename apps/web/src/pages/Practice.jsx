@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -87,6 +87,9 @@ function SqlTable({ name, columns, rows }) {
 
 export default function Practice() {
   const [searchParams] = useSearchParams();
+  // ?contest=<id> (set by the Contest page) routes Submit to the free contest
+  // endpoint so the solve counts on the contest leaderboard.
+  const contestId = searchParams.get('contest');
   const [problems, setProblems] = useState([]);
   const [problemId, setProblemId] = useState(null);
   const [problem, setProblem] = useState(null);
@@ -212,12 +215,19 @@ export default function Practice() {
     setResult(null);
     setError('');
     try {
-      const { data } = await api.post(`/practice/problems/${problem.id}/submit`, { code, language });
+      const inContest = Boolean(contestId) && questionType === 'code';
+      const url = inContest
+        ? `/contest/${contestId}/problems/${problem.id}/submit`
+        : `/practice/problems/${problem.id}/submit`;
+      const { data } = await api.post(url, { code, language });
       setResult(data);
-      setResultMode('submit');
+      setResultMode(inContest ? 'contest' : 'submit');
       setSubmissions(null); // stale now — refetch next time the tab is opened
       // wallet sidebar counter is updated automatically by the api.js response interceptor
-      if (data.all_passed) toast.success(`All ${data.total} tests passed! -${data.credits_used} credits`);
+      if (inContest) {
+        if (data.all_passed) toast.success(`All ${data.total} tests passed! Counted on the contest leaderboard — free`);
+        else toast.error(`${data.passed_count}/${data.total} tests passed — free, try again`);
+      } else if (data.all_passed) toast.success(`All ${data.total} tests passed! -${data.credits_used} credits`);
       else toast.error(`${data.passed_count}/${data.total} tests passed — -${data.credits_used} credits`);
     } catch (e) {
       setError(detailToString(e, 'Submission failed'));
@@ -312,6 +322,13 @@ export default function Practice() {
           <p className="text-sm text-muted-foreground">DSA, SQL, Logical Reasoning, Computer Networks, and System Design — practice against real graders.</p>
         </div>
       </div>
+
+      {contestId && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm" data-testid="practice-contest-banner">
+          <span>Contest mode: Submit counts on the contest leaderboard and is free. Run is also free.</span>
+          <Link to="/contest" className="font-medium text-primary hover:underline shrink-0">Back to contest</Link>
+        </div>
+      )}
 
       {problems.length > 1 && (
         <div className="mb-4 flex items-center gap-2">
@@ -598,7 +615,9 @@ export default function Practice() {
                     )}
                     <span data-testid="practice-pass-summary">{passSummary}</span>
                   </div>
-                  {resultMode === 'submit' ? (
+                  {resultMode === 'contest' ? (
+                    <span className="text-xs text-muted-foreground">contest submission · free</span>
+                  ) : resultMode === 'submit' ? (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Coins className="h-3.5 w-3.5" /> -{result.credits_used} credits · balance {result.balance}
                     </span>
