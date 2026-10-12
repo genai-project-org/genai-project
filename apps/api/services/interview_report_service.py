@@ -150,7 +150,7 @@ async def _violations_public(session_id: str) -> List[Dict[str, Any]]:
 
 async def _mark_no_data(session: Dict[str, Any], session_id: str,
                         det_scores: Optional[Dict[str, Optional[float]]] = None,
-                        scored_question_count: int = 0) -> None:
+                        scored_question_count: int = 0, candidate_turn_count: int = 0) -> None:
     """A session that didn't produce enough real evidence to earn a numeric,
     authoritative-looking score. Two distinct ways to land here, told with
     different copy because they're different stories:
@@ -182,13 +182,23 @@ async def _mark_no_data(session: Dict[str, Any], session_id: str,
             "that actually happened. Whatever WAS genuinely observed is listed below; everything else is simply "
             "unassessed, not averaged into a number that was never earned."
         )
+    elif candidate_turn_count > 0 and status != "terminated_violations":
+        no_data_reason = "insufficient_engagement"
+        headline = "## Not enough of the interview happened to score it"
+        body = (
+            f"You answered {candidate_turn_count} time{'s' if candidate_turn_count != 1 else ''}, but the interview ended "
+            f"before at least {MIN_SCORED_QUESTIONS_FOR_REPORT} questions were fully worked through and assessed, "
+            "so no overall score is given — a number built on so little would be misleading. "
+            "Try a fuller session and let the interviewer take you through a couple of complete questions."
+            + (f" The session also recorded {len(violations)} proctoring violation{'s' if len(violations) != 1 else ''} (listed below)." if violations else "")
+        )
     elif status == "terminated_violations":
         no_data_reason = "terminated_violations"
         n = len(violations)
         headline = f"## Session ended — {n} proctoring violation{'s' if n != 1 else ''}"
         body = (
             f"This session was automatically ended after {n} confirmed proctoring violation{'s' if n != 1 else ''} "
-            "before a single answer was recorded. See the violation list below for exactly what was flagged and when."
+            "before enough of the interview had been assessed to score it. See the violation list below for exactly what was flagged and when."
         )
     elif status == "abandoned":
         no_data_reason = "abandoned_by_candidate"
@@ -280,7 +290,7 @@ async def _generate_report_inner(session_id: str) -> None:
         # as "roughly average" for someone who never touched the actual
         # problem. Whatever real signal DOES exist (det_scores' non-None
         # entries) is preserved and shown honestly — see _mark_no_data.
-        await _mark_no_data(session, session_id, det_scores, scored_question_count)
+        await _mark_no_data(session, session_id, det_scores, scored_question_count, len(candidate_turns))
         return
 
     proctoring_integrity = await _proctoring_integrity(session_id)
