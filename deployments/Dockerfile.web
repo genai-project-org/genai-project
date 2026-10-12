@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# Build context: repo root.  docker build -f deployments/Dockerfile.web .
+FROM node:20-alpine AS build
+WORKDIR /web
+COPY apps/web/package.json apps/web/package-lock.json ./
+RUN npm install --no-audit --no-fund --legacy-peer-deps
+COPY apps/web/ .
+# Same-origin API: the SPA calls ${VITE_BACKEND_URL}/api/... which Caddy proxies to the api container.
+ARG VITE_BACKEND_URL=https://iema.ai
+ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+RUN npm run build
+
+FROM caddy:2-alpine
+COPY --from=build /web/dist /srv
+COPY deployments/Caddyfile /etc/caddy/Caddyfile

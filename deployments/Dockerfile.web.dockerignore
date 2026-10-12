@@ -1,0 +1,8 @@
+**/.env
+**/.env.*
+**/node_modules
+.git
+.claude
+apps/mobile
+apps/api
+apps/web/dist

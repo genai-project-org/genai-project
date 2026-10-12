@@ -1,0 +1,36 @@
+# SITE_ADDRESS defaults to the production domains; compose builds it from DOMAIN
+# in .env.production (e.g. "iema.ai, www.iema.ai").
+{
+	email {$ACME_EMAIL:admin@iema.ai}
+}
+
+{$SITE_ADDRESS:iema.ai, www.iema.ai} {
+	encode zstd gzip
+
+	@www host www.iema.ai
+	redir @www https://iema.ai{uri} permanent
+
+	# API (SSE/streaming friendly: no buffering)
+	handle /api/* {
+		request_body {
+			max_size 100MB
+		}
+		reverse_proxy api:8000 {
+			flush_interval -1
+			transport http {
+				response_header_timeout 300s
+			}
+		}
+	}
+
+	# SPA with history fallback
+	handle {
+		root * /srv
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@html not path /assets/*
+		header @html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
