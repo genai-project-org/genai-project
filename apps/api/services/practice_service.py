@@ -3172,7 +3172,8 @@ class PistonUnavailableError(Exception):
 
 
 async def _piston_execute(
-    piston_language: str, piston_version: str, source: str, stdin: str, filename: Optional[str] = None
+    piston_language: str, piston_version: str, source: str, stdin: str, filename: Optional[str] = None,
+    run_timeout_ms: Optional[int] = None, run_memory_limit_mb: Optional[int] = None,
 ) -> Dict[str, Any]:
     file_entry = {"content": source}
     if filename:
@@ -3182,10 +3183,13 @@ async def _piston_execute(
         "version": piston_version,
         "files": [file_entry],
         "stdin": stdin,
-        "run_timeout": RUN_TIMEOUT_MS,
+        "run_timeout": run_timeout_ms or RUN_TIMEOUT_MS,
     }
+    if run_memory_limit_mb:
+        payload["run_memory_limit"] = int(run_memory_limit_mb) * 1024 * 1024
+    http_timeout = max(PISTON_TIMEOUT_S, (run_timeout_ms or 0) / 1000.0 + 10)
     try:
-        async with httpx.AsyncClient(timeout=PISTON_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             resp = await client.post(f"{PISTON_URL}/execute", json=payload)
     except httpx.HTTPError as e:
         raise PistonUnavailableError(f"Could not reach code execution service: {e}") from e
@@ -3200,7 +3204,11 @@ async def _piston_execute(
     return data["run"]
 
 
-async def run_submission(problem: dict, code: str, language: str, sample_only: bool = False) -> Dict[str, Any]:
+async def run_submission(
+    problem: dict, code: str, language: str, sample_only: bool = False,
+    time_limit_ms: Optional[int] = None, memory_limit_mb: Optional[int] = None,
+    visible_indices: Optional[List[int]] = None,
+) -> Dict[str, Any]:
     """Run `code` against test cases of `problem`. Raises PistonUnavailableError
     if the execution backend itself could not be reached — callers should NOT
     charge credits in that case. Returns per-test results plus an overall
@@ -3212,7 +3220,12 @@ async def run_submission(problem: dict, code: str, language: str, sample_only: b
     Examples. `sample_only=False` (the credited "Submit" action) executes
     EVERY test case, but only returns full detail for the sample ones; hidden
     cases report index/passed/crashed only, so a submission can never be used
-    to read back the hidden suite's expected outputs."""
+    to read back the hidden suite's expected outputs.
+
+    Optional contest overrides (defaults keep practice behaviour unchanged):
+    `time_limit_ms`/`memory_limit_mb` tighten the sandbox per test, and
+    `visible_indices` replaces "samples are visible" with an explicit set of
+    test-case indices whose input/expected are shown."""
     lang_cfg = LANGUAGE_RUNTIMES.get(language)
     if not lang_cfg:
         raise ValueError(f"Unsupported language: {language}")
@@ -3251,6 +3264,7 @@ async def run_submission(problem: dict, code: str, language: str, sample_only: b
             run = await _piston_execute(
                 lang_cfg["piston_language"], lang_cfg["piston_version"], full_source, stdin,
                 filename=lang_cfg.get("filename"),
+                run_timeout_ms=time_limit_ms, run_memory_limit_mb=memory_limit_mb,
             )
         except PistonUnavailableError:
             raise  # bubble up — don't charge, don't record a partial submission
@@ -3264,7 +3278,10 @@ async def run_submission(problem: dict, code: str, language: str, sample_only: b
         passed = (not crashed) and actual_norm == expected_norm
         if passed:
             passed_count += 1
-        if sample_only or tc.get("is_sample"):
+        show_detail = sample_only or (
+            (i in visible_indices) if visible_indices is not None else bool(tc.get("is_sample"))
+        )
+        if show_detail:
             results.append({
                 "index": i,
                 "input": tc["input"],

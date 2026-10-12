@@ -28,8 +28,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db import now_iso, now_utc, users_col  # noqa: E402
 from services.practice_service import seed_problems, practice_problems_col  # noqa: E402
 from services.contest_service import (  # noqa: E402
-    contests_col, contest_teams_col, contest_submissions_col, ensure_indexes,
+    contests_col, contest_teams_col, contest_submissions_col, contest_announcements_col, ensure_indexes,
 )
+from services.contest_settings import ContestSettings, ProblemConfig  # noqa: E402
 
 CONTEST_NAME = "Launch Hack-a-Thon 2026"
 
@@ -55,6 +56,50 @@ LANDING_PAGE = {
     "accent": "indigo",
     "layout": "split",
 }
+
+# Settings showcased by the demo contest (validated through the same pydantic
+# schema the admin UI/API use, so the seed can never drift from the schema).
+# Points-based scoring with graded points, partial credit on the hardest
+# problem, first-solve + speed bonuses, milestone bonuses, a small wrong-
+# submission penalty, a staged unlock (the last problem opens 75 minutes after
+# start, i.e. shortly after seeding), prizes, and top-3 winner certificates.
+DEMO_SETTINGS = ContestSettings.model_validate({
+    "registration": {"mode": "both", "min_team_size": 1, "max_team_size": 3, "access": "public"},
+    "scoring": {
+        "mode": "points", "partial_scoring": True, "wrong_penalty_points": 5,
+        "first_solve_bonus": 20, "speed_bonus_max": 30, "speed_bonus_decay_minutes": 1440,
+        "milestone_bonuses": [{"solved": 3, "points": 25}, {"solved": 5, "points": 75}],
+        "tie_breakers": ["time", "last_solve", "registered"],
+    },
+    "leaderboard": {"visibility": "visible", "freeze_minutes": 0},
+    "prizes": [
+        {"from_rank": 1, "to_rank": 1, "title": "Champion", "prize": "IEMA.ai swag + featured profile badge"},
+        {"from_rank": 2, "to_rank": 3, "title": "Podium", "prize": "Certificate of Achievement"},
+    ],
+    "certificate": {"enabled": True, "winner_top_n": 3, "participation_min_solved": 0},
+    "branding": {
+        "description": "Five problems, one leaderboard. Solve fast, solve first, earn bonus points.",
+        "rules_text": (
+            "1. Teams of 1-3. One account per person.\n"
+            "2. Points per problem as shown; partial credit for partially passing tests.\n"
+            "3. First team to solve a problem earns +20; faster solves earn up to +30 speed bonus.\n"
+            "4. Each wrong submission costs 5 points on that problem.\n"
+            "5. No sharing code between teams - duplicate solutions are flagged and may be disqualified."
+        ),
+    },
+}).model_dump()
+
+DEMO_PROBLEM_CONFIGS = {
+    pid: ProblemConfig.model_validate(cfg).model_dump() for pid, cfg in {
+        "two-sum": {"points": 50},
+        "valid-palindrome": {"points": 75},
+        "binary-search": {"points": 100},
+        "two-sum-ii-sorted": {"points": 150, "max_attempts": 10},
+        "product-of-array-except-self": {"points": 250, "release_after_minutes": 75, "time_limit_ms": 3000},
+    }.items()
+}
+
+DEMO_ANNOUNCEMENT = "Welcome to the Launch Hack-a-Thon! The final problem unlocks 75 minutes after the start."
 
 DEMO_TEAMS = [
     # (team name, member names, [(problem_id, minutes after start)])
@@ -88,6 +133,12 @@ async def seed_contest(days: int) -> dict:
         "start_at": start.isoformat(),
         "end_at": end.isoformat(),
         "landing_page": LANDING_PAGE,
+        "settings": DEMO_SETTINGS,
+        "problem_configs": DEMO_PROBLEM_CONFIGS,
+        "state": "published",
+        "archived": False,
+        "paused_at": None,
+        "pauses": [],
         "ended_early": False,
         "updated_at": now_iso(),
     }
@@ -103,7 +154,12 @@ async def seed_contest(days: int) -> dict:
             "created_at": now_iso(), **fields,
         })
         print(f"Created contest '{CONTEST_NAME}' ({contest_id})")
-    print(f"  live {fields['start_at']} -> {fields['end_at']}, {len(PROBLEM_IDS)} problems")
+    await contest_announcements_col.delete_many({"contest_id": contest_id, "created_by": "seed-script"})
+    await contest_announcements_col.insert_one({
+        "_id": uuid.uuid4().hex, "contest_id": contest_id, "text": DEMO_ANNOUNCEMENT, "pinned": True,
+        "created_by": "seed-script", "created_at": now_iso(),
+    })
+    print(f"  live {fields['start_at']} -> {fields['end_at']}, {len(PROBLEM_IDS)} problems, points-based scoring")
     return {"id": contest_id, "start": start}
 
 
@@ -131,7 +187,7 @@ async def seed_leaderboard(contest_id: str, start) -> None:
         await contest_teams_col.insert_one({
             "_id": team_id, "contest_id": contest_id, "name": team_name,
             "member_user_ids": ids, "created_by": ids[0],
-            "is_open": False, "created_at": now_iso(),
+            "is_open": False, "disqualified": False, "created_at": now_iso(),
         })
         for i, (pid, minutes) in enumerate(solves):
             await contest_submissions_col.insert_one({
