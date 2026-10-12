@@ -32,6 +32,9 @@ services:
       DB_NAME: ${DB_NAME:-iema}
       PISTON_URL: ${PISTON_URL:-http://piston:2000/api/v2}
       BACKEND_UPLOADS_DIR: /app/uploads
+      # Interviewer voices (Piper TTS) are baked into the image under /app/models/piper
+      PIPER_VOICE_DIR: /app/models/piper
+      PIPER_VOICE_MODEL: /app/models/piper/en_US-ryan-high.onnx
     volumes: [uploads:/app/uploads, hf_cache:/root/.cache/huggingface]
     depends_on: [piston, mongo]
     expose: ["8000"]
