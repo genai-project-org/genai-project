@@ -5,6 +5,7 @@ all mobile subscriptions through App Store / Play Store IAP.
 """
 import os
 import logging
+import uuid
 from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Optional
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ from models import (
 from services.credit_service import add_credits
 from services.notification_service import notify
 from services.payments_service import get_usd_to_inr, round_up_inr
+from services import pack_pricing
 from services.discount_service import validate as validate_discount, increment_use
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,53 @@ async def _get_pack(slug: str, currency: str = None) -> dict:
 
 
 # ================= RAZORPAY (Payment Links — domain-agnostic, hosted on rzp.io) =================
+async def _create_payment_link(request: Request, user: User, *, pack_slug: str, label: str,
+                               price_usd: float, credits_val: float, discount: Optional[dict] = None,
+                               kind: str = "pack") -> dict:
+    """Single Payment-Link creation path shared by fixed packs and pay-as-you-go.
+    The INR amount uses the engine's clean-figure rounding so what the UI shows is what is charged."""
+    fx_rate = await get_usd_to_inr()
+    inr_step = int((await pack_pricing.get_published())["config"]["inr_round_step"])
+    amount_paise = pack_pricing.inr_for_usd(price_usd, fx_rate, inr_step) * 100
+    origin = str(request.headers.get("origin") or request.headers.get("referer") or "").rstrip("/") \
+             or os.environ.get("APP_URL", "").rstrip("/")
+    callback = f"{origin}/payment-success?provider=razorpay"
+    # `reference_id` must be unique per link (<= 40 chars) — correlates webhook/callback to a tx row.
+    ref_id = f"iema_{user.id[-6:]}_{uuid.uuid4().hex[:10]}"
+    link = _razorpay_client.payment_link.create({
+        "amount": amount_paise,
+        "currency": "INR",
+        "accept_partial": False,
+        "reference_id": ref_id,
+        "description": f"IEMA.ai — {label} ({int(credits_val)} credits, ${price_usd:.2f} USD"
+                       + (f", code {discount['code']}" if discount else "") + ")",
+        "customer": {"name": user.name or user.email.split("@")[0], "email": user.email},
+        "notify": {"sms": False, "email": True},
+        "reminder_enable": False,
+        "notes": {"user_id": user.id, "pack_slug": pack_slug, "kind": kind,
+                  "usd_price": str(price_usd), "credits": str(credits_val)},
+        "callback_url": callback,
+        "callback_method": "get",
+    })
+    tx = PaymentTransaction(
+        user_id=user.id, provider="razorpay", pack_slug=pack_slug, amount=price_usd, currency="usd",
+        credits=credits_val, order_id=link["id"], status="initiated",
+        metadata={"user_id": user.id, "pack_slug": pack_slug, "kind": kind, "reference_id": ref_id,
+                  "amount_paise": amount_paise, "fx_rate": fx_rate, "short_url": link.get("short_url"),
+                  "discount": discount},
+    )
+    await payment_transactions_col.insert_one(tx.to_mongo())
+    return {
+        "payment_link_id": link["id"],
+        "short_url": link.get("short_url"),
+        "reference_id": ref_id,
+        "amount": amount_paise,
+        "currency": "INR",
+        "usd_price": price_usd,
+        "credits": credits_val,
+    }
+
+
 @router.post("/razorpay/order")
 async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Request, user: User = Depends(get_current_user)):
     """Creates a Razorpay **Payment Link** (hosted at `rzp.io`) so the checkout
@@ -63,62 +112,30 @@ async def create_razorpay_payment_link(req: RazorpayOrderRequest, request: Reque
             raise HTTPException(400, f"Discount not applied: {d.get('reason', 'invalid code')}")
         price_usd = d["final_usd"]  # charge the discounted USD
         discount = {"code": req.discount_code.upper(), "discount_usd": d["discount_usd"]}
-    fx_rate = await get_usd_to_inr()
-    amount_paise = round_up_inr(price_usd * fx_rate) * 100
     credits_val = float(pack["credits"] + pack.get("bonus_credits", 0))
-    origin = str(request.headers.get("origin") or request.headers.get("referer") or "").rstrip("/") \
-             or os.environ.get("APP_URL", "").rstrip("/")
-    callback = f"{origin}/payment-success?provider=razorpay"
-    # `reference_id` must be unique per link — used to correlate the webhook /
-    # callback back to a specific transaction row.
-    import uuid
-    # Razorpay requires reference_id to be <= 40 chars
-    ref_id = f"iema_{user.id[-6:]}_{uuid.uuid4().hex[:10]}"
-    link = _razorpay_client.payment_link.create({
-        "amount": amount_paise,
-        "currency": "INR",
-        "accept_partial": False,
-        "reference_id": ref_id,
-        "description": f"IEMA.ai — {pack['name']} ({int(credits_val)} credits, ${price_usd:.2f} USD"
-                       + (f", code {discount['code']}" if discount else "") + ")",
-        "customer": {
-            "name": user.name or user.email.split("@")[0],
-            "email": user.email,
-        },
-        "notify": {"sms": False, "email": True},
-        "reminder_enable": False,
-        "notes": {
-            "user_id": user.id, "pack_slug": req.pack_slug,
-            "usd_price": str(price_usd), "credits": str(credits_val),
-        },
-        "callback_url": callback,
-        "callback_method": "get",
-    })
-    tx = PaymentTransaction(
-        user_id=user.id,
-        provider="razorpay",
-        pack_slug=req.pack_slug,
-        amount=price_usd,
-        currency="usd",
-        credits=credits_val,
-        order_id=link["id"],   # store payment_link_id here
-        status="initiated",
-        metadata={"user_id": user.id, "pack_slug": req.pack_slug,
-                  "reference_id": ref_id, "amount_paise": amount_paise,
-                  "fx_rate": fx_rate, "short_url": link.get("short_url"),
-                  "discount": discount},
-    )
-    await payment_transactions_col.insert_one(tx.to_mongo())
-    return {
-        "payment_link_id": link["id"],
-        "short_url": link.get("short_url"),
-        "reference_id": ref_id,
-        "amount": amount_paise,
-        "currency": "INR",
-        "usd_price": price_usd,
-        "credits": credits_val,
-        "pack": pack,
-    }
+    out = await _create_payment_link(request, user, pack_slug=req.pack_slug, label=pack["name"],
+                                     price_usd=price_usd, credits_val=credits_val, discount=discount)
+    return {**out, "pack": pack}
+
+
+class PaygRequest(BaseModel):
+    amount_usd: float
+
+
+@router.post("/razorpay/payg")
+async def create_payg_payment_link(req: PaygRequest, request: Request, user: User = Depends(get_current_user)):
+    """Pay-as-you-go recharge: the user picks the amount (minimum $20, enforced here).
+    Credits = amount x the published base rate — the same rate every pack is built on."""
+    if not _razorpay_client:
+        raise HTTPException(501, "Razorpay not configured")
+    pub = await pack_pricing.get_published()
+    try:
+        q = pack_pricing.payg_quote(req.amount_usd, pub["config"], int(pub["credits_per_usd"]), await get_usd_to_inr())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    out = await _create_payment_link(request, user, pack_slug="payg", label="Pay-as-you-go recharge",
+                                     price_usd=q["amount_usd"], credits_val=float(q["credits"]), kind="payg")
+    return {**out, "quote": q}
 
 
 @router.get("/razorpay/link-status/{link_id}")
@@ -214,7 +231,8 @@ async def discount_validate(req: DiscountCheckReq, user: User = Depends(get_curr
     pack = await _get_pack(req.pack_slug, "usd")
     res = await validate_discount(req.code, float(pack["price"]), target_kind=f"pack:{req.pack_slug}")
     if res.get("ok"):
-        res["final_inr"] = round_up_inr(res["final_usd"] * await get_usd_to_inr())
+        step = int((await pack_pricing.get_published())["config"]["inr_round_step"])
+        res["final_inr"] = pack_pricing.inr_for_usd(res["final_usd"], await get_usd_to_inr(), step)
     return res
 
 

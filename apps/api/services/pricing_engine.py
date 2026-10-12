@@ -16,6 +16,10 @@ from services.credit_service import get_or_create_wallet, deduct_credits, add_cr
 
 logger = logging.getLogger(__name__)
 
+# Rolling per-plan usage windows are a legacy subscription-plan wall. Credits are the only
+# gate now, so enforcement is OFF unless explicitly re-enabled.
+ENFORCE_USAGE_WINDOW = os.environ.get("ENFORCE_USAGE_WINDOW", "false").lower() in ("1", "true", "yes")
+
 pricing_col = db["pricing"]
 plans_col = db["plans"]
 usage_col = db["ai_usage"]  # per-call spend records for admin analytics
@@ -71,6 +75,7 @@ PROVIDER_COST_USD_PER_CREDIT = {
     "anthropic": 0.0015,   # Claude Haiku 4.5
     "openai":    0.005,    # GPT-Image-1 low
     "emergent":  0.001,
+    "google":    0.003,    # Veo / Gemini
     "adzuna":    0.0,      # free
     "s3":        0.00005,
 }
@@ -236,7 +241,7 @@ async def _guard(user_id: str, cost: float) -> Dict[str, Any]:
     """Enforce window + wallet balance for `cost`. Raises 429/402. Returns window status.
     Deducts nothing — the caller (spend) does the actual charge."""
     window = await check_window(user_id, cost)
-    if not window["ok"]:
+    if ENFORCE_USAGE_WINDOW and not window["ok"]:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
@@ -253,7 +258,7 @@ async def _guard(user_id: str, cost: float) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
-                "message": "Insufficient credits — please subscribe or top-up",
+                "message": "You are out of credits — recharge to keep going",
                 "balance": wallet.total,
                 "needed": cost,
             },
