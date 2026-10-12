@@ -18,7 +18,12 @@ Event shapes (all dicts with a "type"):
                duration_ms, retryable}
               status: pending -> running -> done | failed (same id re-emitted)
   delta/done  final answer text
-  error       {message}                        always human-readable
+  error       {message}
+
+step status also includes "needs_connect" (a @-mentioned connector isn't
+connected; the UI shows a Connect button) and "awaiting_confirm" (a
+destructive/irreversible tool call that is held until the user confirms it in
+the timeline, which re-runs it through POST /mcp/steps/retry).                        always human-readable
 """
 import asyncio
 import json
@@ -51,7 +56,7 @@ ALL SERVICES THIS PLATFORM SUPPORTS (connected and not-yet-connected — use thi
 what to connect when their request needs a service not listed above as connected; never attempt, fake, or \
 silently ignore a request for a not-connected service):
 {catalog}
-
+{mention_note}
 WORKFLOW:
 1. If the request needs two or more tool calls, begin your FIRST reply with a short numbered plan (one line \
 per step, max 6 lines, plain language, no tool names), then immediately start calling tools. For a single \
@@ -60,10 +65,21 @@ simple lookup, skip the plan and just call the tool.
 3. If a tool fails, do not retry the same call more than once. Continue with any remaining independent steps, \
 and in the final answer say in one plain sentence what could not be done and why (never paste error text, \
 JSON or stack traces).
-4. If the request needs a service that isn't connected, tell the user plainly which one to connect, with a \
+4. Some tools (delete, send, merge, ...) are held for the user's one-click confirmation: they return \
+"not executed yet"; treat that as success-pending and tell the user to confirm it in the timeline.
+5. If the request needs a service that isn't connected, tell the user plainly which one to connect, with a \
 markdown link exactly like this: [Connectors page](/connectors) — don't attempt it or pretend you did it.
-5. Finish with a clear, concise plain-language answer of what you did or found — the user sees a live \
+6. Finish with a clear, concise plain-language answer of what you did or found — the user sees a live \
 timeline of your tool calls, so don't repeat raw tool output; summarize it."""
+
+
+# Tool names (generic across every connector) that are destructive or irreversible
+# and therefore wait for a one-click user confirmation instead of auto-running.
+_CONFIRM_RE = re.compile(r"(^|_)(delete|remove|send|merge|archive|cancel|revoke|trash|destroy|drop)(_|$)")
+
+
+def needs_confirmation(tool: str) -> bool:
+    return bool(_CONFIRM_RE.search(tool or ""))
 
 
 # ---------- small helpers ----------
@@ -184,9 +200,15 @@ async def _open_and_collect_tools(
     return tools, connected_names, failures
 
 
-def _build_system_prompt(connector_ids: List[str], connected_names: List[str]) -> str:
+def _build_system_prompt(connector_ids: List[str], connected_names: List[str], mentioned: List[str]) -> str:
     catalog = connector_catalog_summary(set(connector_ids))
-    return SYSTEM_PROMPT_TEMPLATE.format(connector_names=", ".join(connected_names) or "none", catalog=catalog)
+    note = ""
+    if mentioned:
+        names = ", ".join(get_connector(m).display_name for m in mentioned)
+        note = (f"\nThe user explicitly @-mentioned: {names}. Use ONLY these services' tools for this request, "
+                "and act autonomously — don't ask for confirmation before read actions or ordinary writes.\n")
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        connector_names=", ".join(connected_names) or "none", catalog=catalog, mention_note=note)
 
 
 async def _run_tool(user_id: str, pool: ConnectorSessionPool, connector_id: str, tool: str,
@@ -225,18 +247,47 @@ def _finish_step(step_id: str, index: int, connector_id: str, tool: str, args: D
 
 async def _orchestrate(
     user_id: str, prompt: str, history: List[Dict[str, str]], model: str, max_tokens: int,
+    mentions: Optional[List[str]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    connector_ids = await _connected_connector_ids(user_id)
+    connected_all = await _connected_connector_ids(user_id)
+    mentioned = [m for m in dict.fromkeys(mentions or []) if get_connector(m)]
+    step_counter = 0
+    missing: List[str] = []
+    if mentioned:
+        missing = [m for m in mentioned if m not in connected_all]
+        mentioned = [m for m in mentioned if m in connected_all]
+        connector_ids = mentioned or ([] if missing else connected_all)
+    else:
+        connector_ids = connected_all
+
+    if missing:
+        yield {"type": "meta", "provider": "anthropic", "model": model}
+    for cid in missing:
+        step_counter += 1
+        cfg = get_connector(cid)
+        if cfg.mcp_status == "ready":
+            yield _step_payload(f"s{step_counter}", step_counter, "needs_connect", cid, "connect", {},
+                                title=f"Connect {cfg.display_name}",
+                                friendly_error=f"{cfg.display_name} isn't connected yet — connect it to run this.")
+        else:
+            yield _step_payload(f"s{step_counter}", step_counter, "failed", cid, "connect", {},
+                                title=f"{cfg.display_name} unavailable",
+                                friendly_error=f"{cfg.display_name} can be listed, but actions aren't available for it yet.")
+
     if not connector_ids:
-        text = "You haven't connected any services yet — connect one from the [Connectors page](/connectors) first."
+        if missing:
+            names = ", ".join(get_connector(m).display_name for m in missing)
+            text = f"I need {names} connected to do that. Use the Connect button above (or the [Connectors page](/connectors)), then ask again."
+        else:
+            text = "You haven't connected any services yet — connect one from the [Connectors page](/connectors) first."
         yield {"type": "delta", "content": text}
         yield {"type": "done", "content": text, "provider": "anthropic", "model": model}
         return
 
-    step_counter = 0
     async with ConnectorSessionPool(user_id) as pool:
         tools, connected_names, failures = await _open_and_collect_tools(pool, connector_ids)
-        yield {"type": "meta", "provider": "anthropic", "model": model}
+        if not missing:
+            yield {"type": "meta", "provider": "anthropic", "model": model}
 
         for cid, raw in failures:
             step_counter += 1
@@ -248,7 +299,7 @@ async def _orchestrate(
                 raw="Details hidden in demo mode." if DEMO_MODE else raw,
             )
 
-        system_prompt = _build_system_prompt(connector_ids, connected_names)
+        system_prompt = _build_system_prompt(connector_ids, connected_names, mentioned)
         chat = LlmChat(system_message=system_prompt).with_model("anthropic", model, max_tokens=max_tokens)
         messages: List[dict] = [{"role": h["role"], "content": h["content"]} for h in history]
         messages.append({"role": "user", "content": prompt})
@@ -280,6 +331,16 @@ async def _orchestrate(
 
             tool_results = []
             for step_id, index, connector_id, bare, tu in prepared:
+                if needs_confirmation(bare):
+                    yield _step_payload(
+                        step_id, index, "awaiting_confirm", connector_id, bare, tu.input,
+                        friendly_error="This action can't be undone, so it's waiting for your confirmation.",
+                    )
+                    tool_results.append({
+                        "type": "tool_result", "tool_use_id": tu.id, "is_error": False,
+                        "content": "Not executed yet: the user must confirm this action in the timeline.",
+                    })
+                    continue
                 yield _step_payload(step_id, index, "running", connector_id, bare, tu.input)
                 result, ms = await _run_tool(user_id, pool, connector_id, bare, tu.input)
                 done = _finish_step(step_id, index, connector_id, bare, tu.input, result, ms)
@@ -309,7 +370,7 @@ def _friendly_fatal(e: Exception) -> str:
 
 async def stream_prompt_with_tools(
     user_id: str, conv_id: str, prompt: str, history: List[Dict[str, str]],
-    model: str = DEFAULT_TOOL_MODEL,
+    model: str = DEFAULT_TOOL_MODEL, mentions: Optional[List[str]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Workspace chat entry point — yields the event shapes documented above.
 
@@ -317,19 +378,19 @@ async def stream_prompt_with_tools(
     one non-streaming model call); the live timeline carries the progress.
     """
     try:
-        async for evt in _orchestrate(user_id, prompt, history, model, max_tokens=4096):
+        async for evt in _orchestrate(user_id, prompt, history, model, max_tokens=4096, mentions=mentions):
             yield evt
     except Exception as e:
         yield {"type": "error", "message": _friendly_fatal(e)}
 
 
-async def run_prompt(user_id: str, prompt: str) -> Dict[str, Any]:
+async def run_prompt(user_id: str, prompt: str, mentions: Optional[List[str]] = None) -> Dict[str, Any]:
     """Single-shot turn — backs the Connectors page's test box."""
     steps: Dict[str, Dict[str, Any]] = {}
     reply = ""
     plan: Optional[Dict[str, Any]] = None
     try:
-        async for evt in _orchestrate(user_id, prompt, [], DEFAULT_TOOL_MODEL, max_tokens=2048):
+        async for evt in _orchestrate(user_id, prompt, [], DEFAULT_TOOL_MODEL, max_tokens=2048, mentions=mentions):
             if evt["type"] == "step":
                 steps[evt["id"]] = evt
             elif evt["type"] == "plan":

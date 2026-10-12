@@ -145,6 +145,7 @@ class SendMessageRequest(BaseModel):
     conversation_id: Optional[str] = None
     model: Optional[str] = None  # optional model override
     attachments: Optional[List[Dict[str, Any]]] = None  # [{url, content_type, filename}]
+    mentions: Optional[List[str]] = None  # connector ids @-mentioned in the message (Workspace)
 
 
 class RenameConversationRequest(BaseModel):

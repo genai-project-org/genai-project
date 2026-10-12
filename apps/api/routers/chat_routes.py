@@ -31,7 +31,7 @@ def _pick_response_stream(user: User, conv_id: str, req: SendMessageRequest, his
     regardless of which one actually ran.
     """
     if has_tools:
-        return stream_prompt_with_tools(user.id, conv_id, req.content, history)
+        return stream_prompt_with_tools(user.id, conv_id, req.content, history, mentions=req.mentions)
     return stream_ai_response(conv_id, req.content, history, req.model, attachments=req.attachments, user_id=user.id)
 
 CREDIT_COST_MESSAGE = float(os.environ.get("CREDIT_COST_MESSAGE", "1"))
@@ -222,7 +222,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
     # Load history
     history_docs = await messages_col.find({"conversation_id": conv_id}).sort("created_at", 1).to_list(50)
     history = [{"role": d["role"], "content": d["content"]} for d in history_docs[:-1]]  # exclude the just-inserted user msg from prefix
-    has_tools = await user_has_enabled_connectors(user.id)
+    has_tools = bool(req.mentions) or await user_has_enabled_connectors(user.id)
 
     async def event_stream():
         yield f"data: {json.dumps({'type': 'conversation', 'conversation_id': conv_id, 'user_message_id': user_msg.id})}\n\n"
@@ -269,7 +269,7 @@ async def stream_message(req: SendMessageRequest, user: User = Depends(get_curre
                     model=model,
                     credits_used=total_cost,
                     plan=plan_evt,
-                    steps=[s for s in steps_by_id.values() if s["status"] in ("done", "failed")],
+                    steps=[s for s in steps_by_id.values() if s["status"] in ("done", "failed", "needs_connect", "awaiting_confirm")],
                 )
                 asst_res = await messages_col.insert_one(asst_msg.to_mongo())
                 # Central spend (window + wallet + provider tracking)
@@ -391,7 +391,7 @@ async def send_message(
     provider = None
     model = None
     full_text = ""
-    has_tools = await user_has_enabled_connectors(user.id)
+    has_tools = bool(req.mentions) or await user_has_enabled_connectors(user.id)
 
     async for evt in _pick_response_stream(user, conv_id, req, history, has_tools):
         # Client tapped Stop (or otherwise dropped the connection) — bail out

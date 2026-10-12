@@ -133,3 +133,19 @@ async def test_retry_requires_connection(patched):
 async def test_no_connectors_gives_friendly_message():
     events = [e async for e in orch.stream_prompt_with_tools("empty", "c", "hi", [])]
     assert "/connectors" in events[-1]["content"]
+
+
+async def test_mention_restricts_tools_and_destructive_waits_for_confirm(patched):
+    pool, chat = patched
+    await _connect("u5", "slack", "gmail")
+    pool.results = {"gmail.send_message": {"result": "sent"}}
+    chat.script = [
+        SimpleNamespace(stop_reason="tool_use", content=[_tool("a", "gmail__send_message", to="x@y.z")]),
+        SimpleNamespace(stop_reason="end_turn", content=[_text("Waiting for your confirmation.")]),
+    ]
+    events = [e async for e in orch.stream_prompt_with_tools("u5", "c", "@Gmail send", [], mentions=["gmail", "github"])]
+    steps = [e for e in events if e["type"] == "step"]
+    assert steps[0]["status"] == "needs_connect" and steps[0]["connector_id"] == "github"
+    last = [e for e in steps if e["connector_id"] == "gmail"][-1]
+    assert last["status"] == "awaiting_confirm"
+    assert orch.needs_confirmation("delete_event") and not orch.needs_confirmation("list_events")
