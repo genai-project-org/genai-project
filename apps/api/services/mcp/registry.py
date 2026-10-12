@@ -716,7 +716,7 @@ CONNECTORS: Dict[str, ConnectorConfig] = {
         description="Read your LinkedIn profile and, where approved, post on your behalf.",
         scopes=["openid", "profile", "email", "w_member_social"],
         authorize_url="https://www.linkedin.com/oauth/v2/authorization", token_url="https://www.linkedin.com/oauth/v2/accessToken",
-        client_id_env="LINKEDIN_CLIENT_ID", client_secret_env="LINKEDIN_CLIENT_SECRET",
+        client_id_env="LINKEDIN_MCP_CLIENT_ID", client_secret_env="LINKEDIN_MCP_CLIENT_SECRET",
         mcp_status="needs_server",
         mcp_notes=("w_member_social (posting) requires LinkedIn to approve your app for the relevant Product — not "
                    "instant, not guaranteed for small apps. No long-lived refresh tokens for most apps (60-day access "
