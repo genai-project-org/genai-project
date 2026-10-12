@@ -14,7 +14,7 @@ import api from '@/lib/api';
 const MODEL_URL = '/models';
 const COCO_SSD_MODEL_URL = '/models/coco-ssd/model.json';
 const SAMPLE_INTERVAL_MS = 1000;
-const NO_FACE_STREAK_THRESHOLD = 4;        // ~4s of no face before flagging
+const NO_FACE_STREAK_THRESHOLD = 6;        // ~6s of no face before flagging
 const PERSON_SCORE_THRESHOLD = 0.55;       // coco-ssd confidence floor for a "person" box
 const VIOLATION_COOLDOWN_MS = 6000;        // don't re-report the same type back-to-back
 const BUFFER_SECONDS = 8;                  // rolling evidence-clip window
@@ -210,10 +210,14 @@ export default function useProctoring({ sessionId, stream, videoEl, enabled, onR
   useEffect(() => {
     if (!enabled) return undefined;
     const onBlurOrHide = () => reportViolation('tab_blur');
-    document.addEventListener('visibilitychange', () => { if (document.hidden) onBlurOrHide(); });
+    // Named so the SAME function reference is removed on cleanup — the old
+    // inline arrow leaked a listener per effect run that kept reporting
+    // tab_blur after the interview had already ended.
+    const onVisibility = () => { if (document.hidden) onBlurOrHide(); };
+    document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('blur', onBlurOrHide);
     return () => {
-      document.removeEventListener('visibilitychange', onBlurOrHide);
+      document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('blur', onBlurOrHide);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
