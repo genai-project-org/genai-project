@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { setTheme } from '@/store/slices/uiSlice';
 import { NAV } from '@/constants/testIds';
+import RechargeDialog from './RechargeDialog';
 
 export default function AppLayout() {
   const dispatch = useDispatch();
@@ -66,6 +67,7 @@ export default function AppLayout() {
           <Outlet />
         </div>
       </main>
+      <RechargeDialog />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { store } from '@/store/store';
 import { logout, setTokens } from '@/store/slices/authSlice';
-import { setWalletBalance } from '@/store/slices/uiSlice';
+import { setWalletBalance, showRecharge } from '@/store/slices/uiSlice';
 
 // Set VITE_BACKEND_URL in .env to point at a local backend; falls back to prod.
 // const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
@@ -33,6 +33,10 @@ api.interceptors.response.use(
     // Callers do toast.error(data.detail) assuming a string — flatten to avoid
     // "Objects are not valid as a React child".
     const d = error.response?.data?.detail;
+    // Out of credits is not an error wall: open the friendly Recharge prompt (AppLayout).
+    if (error.response?.status === 402) {
+      store.dispatch(showRecharge({ balance: d?.balance, needed: d?.needed }));
+    }
     if (d && typeof d === 'object') {
       error.response.data.detail = d.message || 'Request failed';
     }

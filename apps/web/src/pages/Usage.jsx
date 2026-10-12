@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { BarChart3, Zap, TrendingUp, Activity, Clock, Timer } from 'lucide-react';
+import { BarChart3, Zap, TrendingUp, Activity } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { usePricing, fmtCredits, fmtUsd } from '@/lib/pricing';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
@@ -17,21 +19,18 @@ const PERIODS = [
 export default function Usage() {
   const [summary, setSummary] = useState(null);
   const [timeline, setTimeline] = useState([]);
-  const [window, setWindow] = useState(null);
   const [period, setPeriod] = useState('30d');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const [s, t, w] = await Promise.all([
+        const [s, t] = await Promise.all([
           api.get('/usage/summary'),
           api.get(`/usage/timeline?period=${period}`),
-          api.get('/wallet/window'),
         ]);
         setSummary(s.data);
         setTimeline(t.data.items);
-        setWindow(w.data);
       } finally { setLoading(false); }
     })();
   }, [period]);
@@ -40,10 +39,10 @@ export default function Usage() {
     <div className="p-6 md:p-8 max-w-7xl">
       <div className="mb-8">
         <h1 className="font-display text-3xl font-medium tracking-tight">Usage Analytics</h1>
-        <p className="text-muted-foreground mt-1">Track credits and requests. No pricing — just your activity.</p>
+        <p className="text-muted-foreground mt-1">Track credits and requests across every tool.</p>
       </div>
 
-      {window && <UsageWindow window={window.window} plan={window.plan} />}
+      <CreditRates />
 
       <Tabs value={period} onValueChange={setPeriod} className="mb-6 mt-6">
         <TabsList>
@@ -131,42 +130,33 @@ function InfoRow({ label, value }) {
   );
 }
 
-function UsageWindow({ window, plan }) {
-  const used = window?.used || 0;
-  const cap = window?.cap || 1;
-  const pct = Math.min(100, Math.round((used / cap) * 100));
-  const [remaining, setRemaining] = useState('');
-  useEffect(() => {
-    if (!window?.resets_at) return;
-    const tick = () => {
-      const ms = Math.max(0, new Date(window.resets_at) - new Date());
-      const h = Math.floor(ms / 3.6e6);
-      const m = Math.floor((ms % 3.6e6) / 60000);
-      setRemaining(`${h}h ${m}m`);
-    };
-    tick();
-    const id = setInterval(tick, 30000);
-    return () => clearInterval(id);
-  }, [window]);
-  const critical = pct >= 90;
+function CreditRates() {
+  const { pricing } = usePricing();
+  if (!pricing) return null;
+  const groups = {};
+  (pricing.services || []).filter((x) => x.credit_cost > 0).forEach((x) => {
+    (groups[x.category || 'other'] = groups[x.category || 'other'] || []).push(x);
+  });
   return (
-    <div className="rounded-xl border border-border bg-card p-5" data-testid="usage-window-widget">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Timer className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">Current window</span>
-          <span className="text-xs text-muted-foreground uppercase tracking-wider">· {plan?.name || plan?.plan_id}</span>
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Clock className="h-3 w-3" /> resets in <span className="text-foreground font-medium">{remaining || '—'}</span>
-        </div>
+    <div className="rounded-xl border border-border bg-card p-5" data-testid="usage-credit-rates">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <span className="text-sm font-medium">What credits cost</span>
+        <span className="text-xs text-muted-foreground">
+          {fmtCredits(pricing.credits_per_usd)} credits per {fmtUsd(1)} &middot; <Link to="/billing" className="text-primary hover:underline">Recharge</Link>
+        </span>
       </div>
-      <div className="w-full h-2 rounded-full bg-[hsl(var(--surface))] overflow-hidden">
-        <div className={cn('h-full rounded-full transition-all duration-500', critical ? 'bg-red-500' : 'bg-primary')} style={{ width: `${pct}%` }} />
-      </div>
-      <div className="mt-2 flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{Math.floor(used)} / {Math.floor(cap)} used</span>
-        <span className={cn('text-muted-foreground', critical && 'text-red-500 font-medium')}>{Math.max(0, Math.floor(cap - used))} remaining</span>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-4">
+        {Object.entries(groups).map(([cat, items]) => (
+          <div key={cat}>
+            <div className="text-xs uppercase tracking-wider text-primary mb-1">{cat}</div>
+            {items.map((x) => (
+              <div key={x.service_key} className="flex justify-between text-sm py-0.5">
+                <span className="text-muted-foreground">{x.description}</span>
+                <span className="font-medium">{x.credit_cost}</span>
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   );

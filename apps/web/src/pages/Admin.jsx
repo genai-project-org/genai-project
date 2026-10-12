@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Users as UsersIcon, MessageSquare, Zap, DollarSign, Search, Shield, ShieldOff, Ban, CheckCircle2, Plus, Database, Sliders } from 'lucide-react';
-import { FinancePanel, ProvidersPanel, QueriesPanel, PricingPanel, PlansPanel, DiscountsPanel, SubscriptionsPanel } from './AdminPanels';
+import PackPricingPanel from './AdminPricingEngine';
+import { FinancePanel, ProvidersPanel, QueriesPanel, PricingPanel, DiscountsPanel } from './AdminPanels';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
@@ -42,11 +43,9 @@ export default function Admin() {
           <TabsTrigger value="finance" data-testid="admin-tab-finance">Finance</TabsTrigger>
           <TabsTrigger value="providers" data-testid="admin-tab-providers">Providers</TabsTrigger>
           <TabsTrigger value="queries" data-testid="admin-tab-queries">Queries</TabsTrigger>
-          <TabsTrigger value="pricing" data-testid="admin-tab-pricing">Pricing</TabsTrigger>
-          <TabsTrigger value="plans" data-testid="admin-tab-plans">Plans</TabsTrigger>
+          <TabsTrigger value="packpricing" data-testid="admin-tab-pack-pricing">Packs &amp; Pricing</TabsTrigger>
+          <TabsTrigger value="pricing" data-testid="admin-tab-pricing">Service costs</TabsTrigger>
           <TabsTrigger value="discounts" data-testid="admin-tab-discounts">Discounts</TabsTrigger>
-          <TabsTrigger value="subs" data-testid="admin-tab-subs">Subscriptions</TabsTrigger>
-          <TabsTrigger value="packs">Packs</TabsTrigger>
           <TabsTrigger value="transactions">Transactions</TabsTrigger>
           <TabsTrigger value="kb" data-testid="admin-tab-kb">Data Lake</TabsTrigger>
         </TabsList>
@@ -55,10 +54,8 @@ export default function Admin() {
         <TabsContent value="providers" className="mt-6"><ProvidersPanel /></TabsContent>
         <TabsContent value="queries" className="mt-6"><QueriesPanel /></TabsContent>
         <TabsContent value="pricing" className="mt-6"><PricingPanel /></TabsContent>
-        <TabsContent value="plans" className="mt-6"><PlansPanel /></TabsContent>
+        <TabsContent value="packpricing" className="mt-6"><PackPricingPanel /></TabsContent>
         <TabsContent value="discounts" className="mt-6"><DiscountsPanel /></TabsContent>
-        <TabsContent value="subs" className="mt-6"><SubscriptionsPanel /></TabsContent>
-        <TabsContent value="packs" className="mt-6"><PacksPanel /></TabsContent>
         <TabsContent value="transactions" className="mt-6"><TransactionsPanel /></TabsContent>
         <TabsContent value="kb" className="mt-6"><KnowledgePanel /></TabsContent>
       </Tabs>

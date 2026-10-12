@@ -8,6 +8,7 @@ import {
 import ThemeToggle from '@/components/ThemeToggle';
 import { HOME } from '@/constants/testIds';
 import TemplateGallery from '@/components/TemplateGallery';
+import { usePricing, fmtUsd, fmtInr, fmtCredits } from '@/lib/pricing';
 
 const MODULES = [
   {
@@ -75,6 +76,10 @@ const MODULES = [
 ];
 
 export default function Landing() {
+  const { pricing } = usePricing();
+  const welcome = pricing ? fmtCredits(pricing.welcome_credits) : null;
+  const daily = pricing ? fmtCredits(pricing.daily_credits) : null;
+
   return (
     <div className="min-h-screen bg-background text-foreground overflow-x-hidden">
       {/* Top nav */}
@@ -120,7 +125,7 @@ export default function Landing() {
           <div className="mt-10 flex items-center justify-center gap-3 flex-wrap">
             <Link to="/register">
               <Button size="lg" className="rounded-full px-6">
-                Start free · 100 credits <ArrowRight className="h-4 w-4 ml-1" />
+                {welcome ? `Start free \u00b7 ${welcome} credits` : 'Start free'} <ArrowRight className="h-4 w-4 ml-1" />
               </Button>
             </Link>
             <a href="#modules">
@@ -130,7 +135,7 @@ export default function Landing() {
           <div className="mt-14 flex items-center justify-center gap-6 text-xs text-muted-foreground flex-wrap">
             <span>No card required</span>
             <span className="opacity-30">•</span>
-            <span>20 free credits daily</span>
+            {daily && <span>{daily} free credits daily</span>}
             <span className="opacity-30">•</span>
             <span>Web + iOS + Android</span>
           </div>
@@ -186,35 +191,58 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Pricing preview */}
+      {/* Pricing: rendered entirely from GET /api/pricing (single source of truth) */}
       <section id="pricing" className="py-24 border-t border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-12">
             <div className="text-xs uppercase tracking-wider text-primary mb-3">Simple pricing</div>
             <h2 className="font-display text-3xl sm:text-4xl font-medium tracking-tight">One wallet. Every module.</h2>
-            <p className="mt-3 text-muted-foreground">Free 100 credits to start + 20 daily. Recharge only when you need more.</p>
+            {pricing && (
+              <p className="mt-3 text-muted-foreground">
+                {welcome} free credits to start + {daily} every day. Recharge only when you need more. No subscriptions.
+              </p>
+            )}
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 max-w-5xl mx-auto">
-            {[
-              { name: 'Starter', price: '$5', credits: '500' },
-              { name: 'Standard', price: '$15', credits: '2,000', badge: 'Popular' },
-              { name: 'Pro', price: '$39', credits: '5,750' },
-              { name: 'Business', price: '$99', credits: '17,500' },
-            ].map((p) => (
-              <div key={p.name} className={`rounded-xl border p-6 relative ${p.badge ? 'border-primary shadow-[0_0_30px_hsl(var(--primary)/0.15)]' : 'border-border'} bg-card`}>
-                {p.badge && (
-                  <div className="absolute -top-2 right-4 text-[10px] uppercase tracking-wider bg-primary text-primary-foreground px-2 py-0.5 rounded-full">
-                    {p.badge}
-                  </div>
-                )}
-                <div className="text-sm text-muted-foreground">{p.name}</div>
-                <div className="mt-1 font-display text-3xl font-medium">{p.price}</div>
-                <div className="mt-1 text-sm text-muted-foreground">{p.credits} credits</div>
+          {pricing && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl mx-auto">
+              <div className="rounded-2xl border border-border bg-card p-6" data-testid="landing-payg">
+                <div className="text-xs uppercase tracking-wider text-primary">Pay as you go</div>
+                <div className="font-display text-2xl font-medium mt-1">Recharge any amount</div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  From {fmtUsd(pricing.payg.min_usd)} &middot; {fmtCredits(pricing.payg.credits_per_usd)} credits per $1
+                </p>
+                <div className="mt-4 space-y-2">
+                  {pricing.payg.presets.map((x) => (
+                    <div key={x.usd} className="flex items-baseline justify-between text-sm">
+                      <span className="font-medium">{fmtUsd(x.usd)} <span className="text-muted-foreground">({fmtInr(x.inr)})</span></span>
+                      <span className="text-muted-foreground">{fmtCredits(x.credits)} credits</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
+              <div className="rounded-2xl border border-border bg-card p-6" data-testid="landing-packs">
+                <div className="text-xs uppercase tracking-wider text-primary">Credit packs</div>
+                <div className="font-display text-2xl font-medium mt-1">Better value bundles</div>
+                <div className="mt-4 space-y-2">
+                  {pricing.packs.filter((x) => x.kind !== 'specialised').map((x) => (
+                    <div key={x.slug} className="flex items-baseline justify-between text-sm">
+                      <span className="font-medium">{x.name} <span className="text-muted-foreground">{fmtUsd(x.price_usd)}</span>
+                        {x.is_popular && <span className="ml-2 text-[10px] uppercase tracking-wider bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full">Popular</span>}
+                      </span>
+                      <span className="text-muted-foreground">{fmtCredits(x.total_credits)} credits</span>
+                    </div>
+                  ))}
+                </div>
+                {pricing.packs.some((x) => x.kind === 'specialised') && (
+                  <p className="text-xs text-muted-foreground mt-4">
+                    Plus specialised packs for {pricing.packs.filter((x) => x.kind === 'specialised').map((x) => x.name.replace(' Pack', '')).join(', ')}.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           <div className="text-center mt-10">
-            <Link to="/register"><Button size="lg" className="rounded-full">Start free with 100 credits <ArrowUpRight className="h-4 w-4 ml-1" /></Button></Link>
+            <Link to="/register"><Button size="lg" className="rounded-full">{welcome ? `Start free with ${welcome} credits` : 'Start free'} <ArrowUpRight className="h-4 w-4 ml-1" /></Button></Link>
           </div>
         </div>
       </section>

@@ -9,11 +9,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Sparkles, Loader2, Apple as AppleIcon, Github, Linkedin, Eye, EyeOff } from 'lucide-react';
 import { AUTH } from '@/constants/testIds';
+import { usePricing, fmtCredits } from '@/lib/pricing';
 
 const GSI_SRC = 'https://accounts.google.com/gsi/client';
 const APPLE_SRC = 'https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js';
 
 export default function AuthPage({ mode }) {
+  const { pricing } = usePricing();
+  const welcome = pricing ? fmtCredits(pricing.welcome_credits) : '';
+  const daily = pricing ? fmtCredits(pricing.daily_credits) : '';
   const isRegister = mode === 'register';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -179,8 +183,8 @@ export default function AuthPage({ mode }) {
           <h2 className="font-display text-3xl font-medium tracking-tight leading-tight">One AI to learn, build a career, and grow.</h2>
           <p className="mt-3 text-muted-foreground">12 intelligence modules — chat, career, resume, interviews, courses and more — with one credit wallet across web + mobile.</p>
           <div className="mt-8 grid grid-cols-3 gap-4 text-sm">
-            <div><div className="font-display text-2xl font-medium">100</div><div className="text-xs text-muted-foreground">Welcome credits</div></div>
-            <div><div className="font-display text-2xl font-medium">20</div><div className="text-xs text-muted-foreground">Daily free credits</div></div>
+            <div><div className="font-display text-2xl font-medium">{welcome}</div><div className="text-xs text-muted-foreground">Welcome credits</div></div>
+            <div><div className="font-display text-2xl font-medium">{daily}</div><div className="text-xs text-muted-foreground">Daily free credits</div></div>
             <div><div className="font-display text-2xl font-medium">12</div><div className="text-xs text-muted-foreground">Modules</div></div>
           </div>
         </div>
@@ -195,7 +199,7 @@ export default function AuthPage({ mode }) {
           </Link>
           <h1 className="font-display text-3xl font-medium tracking-tight">{isRegister ? 'Create your account' : 'Welcome back'}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            {isRegister ? 'Start with 100 credits. No card required.' : 'Sign in to continue to your workspace.'}
+            {isRegister ? `Start with ${welcome} credits. No card required.` : 'Sign in to continue to your workspace.'}
           </p>
 
           <div className="mt-6 space-y-2">
