@@ -276,7 +276,7 @@ export function ParticipantsTab({ contestId, onChanged }) {
   };
   const base = `/contest/${contestId}`;
   return (
-    <div className="space-y-4" data-testid="contest-tab-participants">
+    <div className="space-y-4" data-testid="contest-panel-participants">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Section title="Add a participant" hint="Bypasses cap, window and access rules. The person must already have an account.">
           <div className="flex gap-2">
@@ -351,7 +351,7 @@ export function AnnouncementsTab({ contestId }) {
   useEffect(() => { load(); }, [load]);
 
   return (
-    <div className="space-y-4" data-testid="contest-tab-announcements">
+    <div className="space-y-4" data-testid="contest-panel-announcements">
       <Section title="Broadcast to participants" hint="Shown live at the top of the contest page (refreshes every 15 seconds).">
         <Textarea rows={2} value={text} onChange={(e) => setText(e.target.value)} placeholder="Problem 3 statement clarified…" data-testid="announce-text" />
         <div className="flex items-center gap-4">
