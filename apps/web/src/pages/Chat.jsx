@@ -20,6 +20,9 @@ import 'highlight.js/styles/github-dark.css';
 import { CHAT } from '@/constants/testIds';
 import { cn } from '@/lib/utils';
 import WorkspaceTimeline from '@/components/WorkspaceTimeline';
+import {
+  MentionChips, MentionPopup, activeMention, connectorHandle, extractMentions, filterConnectors,
+} from '@/components/MentionPicker';
 
 // Each prompt has a short `title` (shown in the list) and the full `prompt` inserted on click.
 const TEMPLATE_CATEGORIES = [
@@ -163,6 +166,10 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [toolStatus, setToolStatus] = useState(null);
+  const [connectors, setConnectors] = useState([]);
+  const [mention, setMention] = useState(null); // {query, start} while typing "@..."
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const inputRef = useRef(null);
   const [runPlan, setRunPlan] = useState(null);
   const [runSteps, setRunSteps] = useState([]);
   const [meta, setMeta] = useState(null);
@@ -253,6 +260,39 @@ export default function Chat() {
   // `overrideText`/`overrideAttachments` are set when resending an edited prompt — the
   // composer is left alone in that case. Callers must invoke this explicitly, never as a
   // bare event handler, or the click event would arrive as overrideText.
+  useEffect(() => {
+    const load = () => api.get('/mcp/connectors').then(({ data }) => setConnectors(data || [])).catch(() => {});
+    load();
+    window.addEventListener('focus', load); // pick up a connector just connected in another tab
+    return () => window.removeEventListener('focus', load);
+  }, []);
+
+  const mentionItems = mention ? filterConnectors(connectors, mention.query) : [];
+  const mentionedIds = extractMentions(input, connectors);
+
+  const onInputChange = (e) => {
+    const v = e.target.value;
+    setInput(v);
+    const m = activeMention(v, e.target.selectionStart ?? v.length);
+    setMention(m);
+    setMentionIdx(0);
+  };
+
+  const pickMention = (c) => {
+    if (!mention) return;
+    const insert = `@${connectorHandle(c)} `;
+    const caret = mention.start + mention.query.length + 1;
+    const next = input.slice(0, mention.start) + insert + input.slice(caret);
+    setInput(next);
+    setMention(null);
+    const pos = mention.start + insert.length;
+    setTimeout(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(pos, pos); }, 0);
+  };
+
+  const removeMention = (c) => {
+    setInput((v) => v.replace(new RegExp(`(^|\\s)@${connectorHandle(c)}(?![A-Za-z0-9_])\\s?`, 'i'), '$1'));
+  };
+
   const handleSend = async (overrideText, overrideAttachments) => {
     const resending = typeof overrideText === 'string';
     const text = (resending ? overrideText : input).trim();
@@ -278,7 +318,7 @@ export default function Chat() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${access_token}`,
         },
-        body: JSON.stringify({ content: text, conversation_id: activeId, attachments: sentAttachments, model }),
+        body: JSON.stringify({ content: text, conversation_id: activeId, attachments: sentAttachments, model, mentions: extractMentions(text, connectors) }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -624,11 +664,22 @@ export default function Chat() {
               </div>
             )}
             <div className="relative rounded-xl border border-border bg-card focus-within:border-primary/50 transition-colors">
+              {mention && mentionItems.length > 0 && (
+                <MentionPopup items={mentionItems} index={mentionIdx} onPick={pickMention} onHover={setMentionIdx} />
+              )}
+              <MentionChips ids={mentionedIds} connectors={connectors} onRemove={removeMention} />
               <Textarea
+                ref={inputRef}
                 data-testid={CHAT.input}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={onInputChange}
                 onKeyDown={(e) => {
+                  if (mention && mentionItems.length > 0) {
+                    if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionItems.length); return; }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionItems.length) % mentionItems.length); return; }
+                    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentionItems[mentionIdx]); return; }
+                    if (e.key === 'Escape') { e.preventDefault(); setMention(null); return; }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
                 }}
                 placeholder="Message supercreater.ai..."

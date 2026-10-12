@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Check, ChevronDown, ChevronRight, CircleDashed, Loader2, RotateCw, X, ListChecks } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDashed, Loader2, Plug, RotateCw, X, ListChecks } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 
-const STATUS_LABEL = { pending: 'Queued', running: 'Running', done: 'Done', failed: 'Failed' };
+const STATUS_LABEL = { pending: 'Queued', running: 'Running', done: 'Done', failed: 'Failed', needs_connect: 'Not connected', awaiting_confirm: 'Needs confirmation' };
 
 function StatusIcon({ status }) {
   const base = 'h-5 w-5 rounded-full flex items-center justify-center flex-shrink-0';
@@ -15,6 +15,12 @@ function StatusIcon({ status }) {
   }
   if (status === 'failed') {
     return <span className={cn(base, 'bg-red-500/15 text-red-600 dark:text-red-400')}><X className="h-3 w-3" /></span>;
+  }
+  if (status === 'awaiting_confirm') {
+    return <span className={cn(base, 'bg-amber-500/15 text-amber-600 dark:text-amber-400')}><AlertTriangle className="h-3 w-3" /></span>;
+  }
+  if (status === 'needs_connect') {
+    return <span className={cn(base, 'bg-primary/15 text-primary')}><Plug className="h-3 w-3" /></span>;
   }
   return <span className={cn(base, 'bg-muted text-muted-foreground')}><CircleDashed className="h-3 w-3" /></span>;
 }
@@ -42,6 +48,8 @@ function Step({ step, last, onRetry, retrying }) {
               step.status === 'failed' && 'bg-red-500/10 text-red-700 dark:text-red-400',
               step.status === 'running' && 'bg-primary/10 text-primary',
               step.status === 'pending' && 'bg-muted text-muted-foreground',
+              step.status === 'awaiting_confirm' && 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
+              step.status === 'needs_connect' && 'bg-primary/10 text-primary',
             )}
           >
             {STATUS_LABEL[step.status] || step.status}
@@ -64,6 +72,36 @@ function Step({ step, last, onRetry, retrying }) {
           <p className="mt-1.5 text-xs text-muted-foreground">{step.summary}</p>
         )}
 
+        {step.status === 'needs_connect' && (
+          <div className="mt-1.5 rounded-md border border-primary/30 bg-primary/5 px-2.5 py-2 text-xs">
+            <p>{step.friendly_error}</p>
+            <a
+              href={`/connectors?connect=${step.connector_id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1.5 inline-flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-primary-foreground"
+              data-testid="workspace-step-connect"
+            >
+              <Plug className="h-3 w-3" /> Connect {step.connector_name}
+            </a>
+          </div>
+        )}
+
+        {step.status === 'awaiting_confirm' && (
+          <div className="mt-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs">
+            <p className="text-amber-800 dark:text-amber-300">{step.friendly_error}</p>
+            <button
+              onClick={() => onRetry(step)}
+              disabled={retrying}
+              className="mt-1.5 inline-flex items-center gap-1 rounded bg-amber-500 px-2 py-0.5 text-white hover:bg-amber-600 disabled:opacity-60"
+              data-testid="workspace-step-confirm"
+            >
+              {retrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+              Confirm and run
+            </button>
+          </div>
+        )}
+
         {failed && (
           <div className="mt-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-2 text-xs">
             <p className="text-red-700 dark:text-red-300">{step.friendly_error || 'This step could not be completed.'}</p>
@@ -81,7 +119,7 @@ function Step({ step, last, onRetry, retrying }) {
           </div>
         )}
 
-        {hasDetails && step.status !== 'pending' && step.status !== 'running' && (
+        {hasDetails && ['done', 'failed'].includes(step.status) && (
           <button
             onClick={() => setOpen((o) => !o)}
             className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"

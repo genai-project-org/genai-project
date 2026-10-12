@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -126,6 +126,8 @@ export default function Connectors() {
   const [filter, setFilter] = useState('all'); // all | connected | available
   const [category, setCategory] = useState('All');
   const [unavailableConnector, setUnavailableConnector] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const autoConnectDone = useRef(false);
   const popupRef = useRef(null);
   const popupPollRef = useRef(null);
 
@@ -316,6 +318,22 @@ export default function Connectors() {
       setRunning(false);
     }
   };
+
+  // Deep link from the Workspace timeline ("Connect GitHub"): /connectors?connect=github.
+  // API-key connectors open their dialog straight away; OAuth ones are filtered to the
+  // card so the user's own click opens the popup (browsers block popups without a click).
+  useEffect(() => {
+    const id = searchParams.get('connect');
+    if (!id || autoConnectDone.current || loading) return;
+    const c = connectors.find((x) => x.id === id);
+    if (!c) return;
+    autoConnectDone.current = true;
+    setSearchParams({}, { replace: true });
+    if (c.connected) { toast.info(`${c.display_name} is already connected`); return; }
+    setSearch(c.display_name);
+    if (c.auth_type === 'api_key') openApiKeyDialog(c);
+    else toast.info(`Click Connect on ${c.display_name} to continue`);
+  }, [connectors, loading]);
 
   const categories = useMemo(() => ['All', ...[...new Set(connectors.map((c) => c.category))].sort()], [connectors]);
   const connectedCount = connectors.filter((c) => c.connected).length;
