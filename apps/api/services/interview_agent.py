@@ -162,6 +162,7 @@ CANDIDATE BACKGROUND:
 {resume_context}
 
 BEHAVIOR:
+- The candidate can only see what you SAY — whenever you pose a problem or question, state it in full in that same message (for coding: the title, a clear description, 1-2 examples and constraints; for design: the full prompt). Never refer to "the problem" or tell them to start without having stated it. Right after their brief introduction, pose the first real question immediately.
 - Ask ONE question or follow-up at a time, then wait for the candidate's answer — never stack multiple questions in one message.
 - Adapt difficulty based on how well they're doing: go deeper on strengths, offer a small hint (never the answer) if they're stuck, don't pile on if they're clearly struggling.
 {"- Every time you pose a NEW coding problem (including your very first question this round), call set_code_boilerplate with a matching starter function signature — the candidate's editor is otherwise empty, and typing a signature from scratch or pasting one in wastes time / triggers a proctoring flag." if topic == "dsa" and round_name == "technical" else ""}

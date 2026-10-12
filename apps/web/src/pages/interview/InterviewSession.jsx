@@ -48,7 +48,7 @@ export default function InterviewSession() {
   const [typedText, setTypedText] = useState('');
   const [showTypeInstead, setShowTypeInstead] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [code, setCode] = useState('// Talk through your approach, then write code here.\n');
+  const [code, setCode] = useState('# Talk through your approach, then write code here.\n');
   // Not just the initial setup pick — the interviewer can hand out
   // boilerplate in a different language per problem (e.g. no language
   // preference was set at setup), so this is kept in sync from
@@ -469,6 +469,8 @@ export default function InterviewSession() {
 
   const submitCode = () => {
     if (busy) return;
+    const meaningful = code.split('\n').some((l) => l.trim() && !/^\s*(\/\/|#)\s*Talk through/.test(l));
+    if (!meaningful) { toast.info('Write some code in the editor first, then click "Discuss this code".'); return; }
     submitTurn({ modality: 'code', text: code });
   };
 
@@ -785,7 +787,7 @@ export default function InterviewSession() {
         <div className="flex flex-col min-h-0">
           {isDsa ? (
             <div className="flex flex-col h-full min-h-0">
-              <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-56 border-b border-border" data-testid="interview-dsa-transcript">
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[40vh] min-h-[11rem] border-b border-border" data-testid="interview-dsa-transcript">
                 <TranscriptFeed transcript={transcript} endRef={transcriptEndRef} openingLoading={openingLoading} openingError={openingError} onRetry={beginInterviewOpening} />
               </div>
               <div className="flex-1 min-h-0 flex flex-col">

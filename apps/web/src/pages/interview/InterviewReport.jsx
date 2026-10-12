@@ -222,7 +222,7 @@ export default function InterviewReport() {
           className="rounded-2xl border border-border bg-card p-4"
         >
           <ResponsiveContainer width="100%" height={220}>
-            <RadarChart data={DIMENSION_ORDER.map((d) => ({ dimension: DIMENSION_LABEL[d], score: report.dimension_scores?.[d] ?? 0 }))}>
+            <RadarChart data={DIMENSION_ORDER.map((d) => ({ dimension: DIMENSION_LABEL[d], score: report.dimension_scores?.[d] ?? 0 }))} outerRadius="62%" margin={{ top: 8, right: 40, bottom: 8, left: 40 }}>
               <PolarGrid stroke="hsl(var(--border))" />
               <PolarAngleAxis dataKey="dimension" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
               <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
