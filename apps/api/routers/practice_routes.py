@@ -160,7 +160,8 @@ async def run_solution(problem_id: str, req: SubmitRequest, user: User = Depends
         else:
             run_result = await run_submission(problem, req.code, req.language, sample_only=True)
     except PistonUnavailableError as e:
-        raise HTTPException(502, f"Code execution service unavailable: {e}")
+        logger.warning("Piston unavailable during run: %s", e)
+        raise HTTPException(502, "The code runner is temporarily unavailable, so your code could not be run. Please try again in a minute.")
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     except ValueError as e:

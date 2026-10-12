@@ -256,7 +256,8 @@ async def submit_contest_solution(
     try:
         run_result = await run_submission(problem, req.code, req.language)
     except PistonUnavailableError as e:
-        raise HTTPException(502, f"Code execution service unavailable: {e}")
+        logger.warning("Piston unavailable during contest submit: %s", e)
+        raise HTTPException(502, "The code runner is temporarily unavailable, so nothing was graded or counted. Please try again in a minute.")
     except ValueError as e:
         raise HTTPException(400, str(e))
 
