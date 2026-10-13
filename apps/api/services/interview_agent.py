@@ -28,6 +28,7 @@ FALLBACK_OPENING = (
     "Hi, welcome, thanks for joining. Let's get started \u2014 could you begin by telling me a little about "
     "your background and what you've been working on recently?"
 )
+_SILENT_TOOLS = {"record_score", "set_code_boilerplate"}
 MAX_TOOL_ITERATIONS = 6  # hard cap per turn against a runaway/looping tool-call chain
 MIN_QUESTIONS_BEFORE_END = {"technical": 3, "behavioral": 2}
 
@@ -322,6 +323,11 @@ async def run_turn(
         messages.append({"role": "user", "content": tool_results})
 
         if resp.stop_reason != "tool_use":
+            break
+        # Silent bookkeeping tools (scoring, editor boilerplate) when the model already said its
+        # words: don't spend another ~2-4s LLM round trip just to get a closing line. The
+        # tool_result message above keeps the history valid for the next candidate turn.
+        if spoken_parts and all(tu.name in _SILENT_TOOLS for tu in tool_uses):
             break
 
     if not final_text:

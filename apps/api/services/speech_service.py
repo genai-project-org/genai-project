@@ -14,11 +14,12 @@ a "transcribing..." state rather than assume sub-second latency.
 """
 import os
 import asyncio
+import threading
 import io
 import logging
 import shutil
 import tempfile
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ PIPER_BIN = os.environ.get("PIPER_BIN", "piper")
 # visual lip-sync/captions to lean on) and need to actually catch every
 # question, so this defaults slower than Piper's out-of-the-box rate rather
 # than optimizing for how natural/brisk it sounds.
-PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "1.25"))
+PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "1.15"))
 PIPER_VOICE_MODEL = os.environ.get("PIPER_VOICE_MODEL", "")  # default/fallback path to a .onnx voice model — must be vendored into the deploy image
 # Directory holding EVERY interviewer's .onnx voice model (see
 # interview_service.INTERVIEWERS) — defaults to PIPER_VOICE_MODEL's own
@@ -96,6 +97,11 @@ async def warm_up() -> None:
     try:
         await asyncio.to_thread(_get_whisper_model)
         logger.info("speech_service: faster-whisper model warmed up")
+        try:
+            from services.interview_service import INTERVIEWERS
+            asyncio.create_task(preload_voices([i["voice_file"] for i in INTERVIEWERS]))
+        except Exception:
+            logger.exception("speech_service: voice preload not started")
     except Exception:
         logger.exception("speech_service: warm_up failed — voice answers will be unavailable until this is fixed")
 
@@ -136,6 +142,48 @@ def voice_model_path(filename: str) -> str:
     return os.path.join(PIPER_VOICE_DIR, filename) if PIPER_VOICE_DIR else filename
 
 
+# ---- In-process Piper (voices stay loaded) ---------------------------------
+# Spawning the `piper` CLI per sentence reloads a 60-120MB ONNX voice every time (~2.5s of fixed
+# latency). Holding PiperVoice objects in memory removes that; the CLI stays as the fallback.
+_PIPER_VOICES: Dict[str, Any] = {}
+_PIPER_VOICE_LOCKS: Dict[str, "threading.Lock"] = {}
+_PIPER_REGISTRY_LOCK = threading.Lock()
+
+
+def _get_piper_voice(model_path: str):
+    with _PIPER_REGISTRY_LOCK:
+        voice = _PIPER_VOICES.get(model_path)
+        if voice is None:
+            from piper import PiperVoice
+            voice = PiperVoice.load(model_path)
+            _PIPER_VOICES[model_path] = voice
+            _PIPER_VOICE_LOCKS[model_path] = threading.Lock()
+        return voice, _PIPER_VOICE_LOCKS[model_path]
+
+
+def _synthesize_inproc_sync(model_path: str, text: str) -> bytes:
+    import io
+    import wave
+    from piper import SynthesisConfig
+    voice, lock = _get_piper_voice(model_path)
+    buf = io.BytesIO()
+    with lock:  # one synthesis at a time per voice (espeak phonemizer is not re-entrant)
+        with wave.open(buf, "wb") as wav:
+            voice.synthesize_wav(text, wav, syn_config=SynthesisConfig(length_scale=PIPER_LENGTH_SCALE))
+    return buf.getvalue()
+
+
+async def preload_voices(filenames: List[str]) -> None:
+    """Load the interviewer voices into memory in the background so the first turn is fast too."""
+    for fn in filenames:
+        path = voice_model_path(fn)
+        if piper_available(path):
+            try:
+                await asyncio.to_thread(_get_piper_voice, path)
+            except Exception:
+                logger.exception(f"speech_service: could not preload voice {fn}")
+
+
 async def synthesize(text: str, voice_model_path: Optional[str] = None) -> Optional[bytes]:
     """Interviewer's reply text -> WAV bytes via a Piper subprocess. Returns
     None (not raises) if Piper isn't configured in this environment, so the
@@ -158,6 +206,11 @@ async def synthesize(text: str, voice_model_path: Optional[str] = None) -> Optio
     if not piper_available(model_path):
         logger.warning(f"speech_service.synthesize: Piper not configured/model missing ({model_path!r}) — skipping TTS")
         return None
+
+    try:
+        return await asyncio.to_thread(_synthesize_inproc_sync, model_path, text[:2000])
+    except Exception:
+        logger.exception("speech_service: in-process Piper failed, falling back to the piper CLI")
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         out_path = f.name
