@@ -11,6 +11,7 @@ Recording is flag-triggered only (a short clip around the violation), never a
 continuous session recording — see the product decision in the Mock Interview
 plan.
 """
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -33,6 +34,45 @@ VALID_VIOLATION_TYPES = {
     "face_not_visible", "multiple_faces", "tab_blur", "fullscreen_exit",
     "copy_paste", "devtools_suspected", "app_backgrounded", "voice_mismatch",
 }
+
+_VIOLATION_SPOKEN = {
+    "face_not_visible": "I cannot see your face. You must stay clearly in front of the camera for the whole interview.",
+    "multiple_faces": "I can see more than one person on your camera. You must be completely alone during this interview.",
+    "tab_blur": "You left the interview screen. You are not allowed to switch tabs or windows.",
+    "fullscreen_exit": "You exited full screen. Return to full screen right now and stay there.",
+    "copy_paste": "Copying or pasting is not allowed in this interview. Write your own code.",
+    "devtools_suspected": "Opening developer tools is not permitted in this interview.",
+    "app_backgrounded": "You moved the interview to the background. You must keep this screen in front at all times.",
+    "voice_mismatch": "The voice I am hearing does not match the candidate who started this interview. Only you may answer.",
+}
+
+
+def spoken_warning_text(violation_type: str, warning_count: int, terminated: bool) -> str:
+    """Strict, interviewer-voiced warning read aloud when a violation is confirmed."""
+    reason = _VIOLATION_SPOKEN.get(violation_type, "That is a violation of the interview rules.")
+    if terminated:
+        return (f"{reason} This is your third violation. I am ending this interview right now. "
+                "Your session is terminated and the violations will be recorded in your report.")
+    if warning_count >= WARNINGS_BEFORE_TERMINATION:
+        return (f"{reason} This is your final warning. One more violation and I will terminate this interview "
+                "immediately. Do not let it happen again.")
+    return (f"Warning. {reason} This would not be tolerated in a real interview. "
+            "Do not repeat it, or this session will be terminated.")
+
+
+async def _spoken_warning_audio(session: Dict[str, Any], text: str) -> Optional[str]:
+    """TTS in the session's interviewer voice. Best effort: any failure degrades to text-only."""
+    try:
+        import base64
+        from services import speech_service
+        from services.interview_service import _INTERVIEWERS_BY_ID
+        voice = speech_service.voice_model_path(
+            _INTERVIEWERS_BY_ID.get(session.get("interviewer_id"), {}).get("voice_file", ""))
+        audio = await asyncio.wait_for(speech_service.synthesize(text, voice), timeout=12)
+        return base64.b64encode(audio).decode("ascii") if audio else None
+    except Exception:
+        logger.exception("proctoring_service: spoken warning TTS failed, continuing text-only")
+        return None
 
 
 async def record_violation(
@@ -110,10 +150,14 @@ async def record_violation(
             {"_id": session_id, "paused_at": None}, {"$set": {"paused_at": now_iso()}},
         )
 
+    warning_text = spoken_warning_text(violation_type, warning_count, terminated)
+    warning_audio = await _spoken_warning_audio(session, warning_text)
     return {
         "warning_count": warning_count,
         "warnings_remaining": max(0, TERMINATE_AT_COUNT - warning_count),
         "terminated": terminated,
+        "warning_text": warning_text,
+        "warning_audio_base64": warning_audio,
     }
 
 

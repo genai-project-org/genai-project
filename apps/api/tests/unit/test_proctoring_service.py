@@ -43,14 +43,14 @@ async def _active_session(user_id="user-1"):
 async def test_first_violation_is_a_warning_not_a_termination():
     session_id = await _active_session()
     result = await proctoring_service.record_violation(session_id, "user-1", "tab_blur")
-    assert result == {"warning_count": 1, "warnings_remaining": 2, "terminated": False}
+    assert {k: result[k] for k in ('warning_count', 'warnings_remaining', 'terminated')} == {"warning_count": 1, "warnings_remaining": 2, "terminated": False}
 
 
 async def test_second_violation_still_not_terminated():
     session_id = await _active_session()
     await proctoring_service.record_violation(session_id, "user-1", "tab_blur")
     result = await proctoring_service.record_violation(session_id, "user-1", "face_not_visible")
-    assert result == {"warning_count": 2, "warnings_remaining": 1, "terminated": False}
+    assert {k: result[k] for k in ('warning_count', 'warnings_remaining', 'terminated')} == {"warning_count": 2, "warnings_remaining": 1, "terminated": False}
 
 
 async def test_third_violation_terminates_the_session():
@@ -58,7 +58,7 @@ async def test_third_violation_terminates_the_session():
     await proctoring_service.record_violation(session_id, "user-1", "tab_blur")
     await proctoring_service.record_violation(session_id, "user-1", "face_not_visible")
     result = await proctoring_service.record_violation(session_id, "user-1", "multiple_faces")
-    assert result == {"warning_count": 3, "warnings_remaining": 0, "terminated": True}
+    assert {k: result[k] for k in ('warning_count', 'warnings_remaining', 'terminated')} == {"warning_count": 3, "warnings_remaining": 0, "terminated": True}
 
     session = await interview_sessions_col.find_one({"_id": session_id})
     assert session["status"] == "terminated_violations"
@@ -78,3 +78,13 @@ async def test_violation_against_unknown_session_404s():
     with pytest.raises(HTTPException) as exc_info:
         await proctoring_service.record_violation("not-a-real-session", "user-1", "tab_blur")
     assert exc_info.value.status_code == 404
+
+
+def test_spoken_warning_is_strict_and_escalates():
+    from services.proctoring_service import spoken_warning_text
+    first = spoken_warning_text("tab_blur", 1, False)
+    last = spoken_warning_text("multiple_faces", 2, False)
+    end = spoken_warning_text("face_not_visible", 3, True)
+    assert "not allowed to switch tabs" in first and "terminated" in first
+    assert "final warning" in last and "alone" in last
+    assert "ending this interview" in end

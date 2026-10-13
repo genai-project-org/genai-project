@@ -318,13 +318,20 @@ export default function InterviewSession() {
   const activeForProctoring = !loading && !terminatedOverlay && !completedOverlay && !ackRequired
     && ['created', 'technical_in_progress', 'behavioral_in_progress'].includes(sessionStatus);
 
+  const playWarningRef = useRef(null); // set to playInterviewerAudio below (stable across renders)
   const handleProctoringResult = useCallback((data) => {
     setWarningCount(data.warning_count);
+    // The interviewer says the warning out loud, sternly, in their own voice.
+    if (data.warning_audio_base64) playWarningRef.current?.(data.warning_audio_base64);
     setBorderPulse(true);
     setTimeout(() => setBorderPulse(false), 1200);
     if (data.terminated) {
       setAvatarState('warning');
-      setTerminatedOverlay(`Proctoring violation: ${VIOLATION_LABEL[data.type] || data.type}.`);
+      const reason = `Proctoring violation: ${VIOLATION_LABEL[data.type] || data.type}.`;
+      // Let the interviewer finish saying the termination out loud before the screen is replaced
+      // (the overlay unmounts the audio player).
+      if (data.warning_audio_base64) setTimeout(() => setTerminatedOverlay(reason), 9000);
+      else setTerminatedOverlay(reason);
       return;
     }
     if (data.warning_count >= 2) {
@@ -385,6 +392,7 @@ export default function InterviewSession() {
       setTimeout(() => setAvatarState('idle'), 1200);
     };
   };
+  playWarningRef.current = playInterviewerAudio;
 
   // ---- Auto-start: the interviewer greets you and asks the first question,
   // exactly like a real interview — the candidate never has to speak first.
