@@ -27,12 +27,18 @@ def _headers() -> dict:
 async def list_channels(limit: int = 50) -> str:
     """List public and private channels the bot can see in the workspace."""
     async with httpx.AsyncClient(timeout=15) as http:
-        res = await http.get(
-            f"{SLACK_API}/conversations.list",
-            headers=_headers(),
-            params={"types": "public_channel,private_channel", "limit": max(1, min(limit, 200))},
-        )
-    data = res.json()
+        data = {}
+        # Private channels need the groups:read scope; connections made before it was requested
+        # only have public-channel access, so fall back instead of failing the whole call.
+        for types in ("public_channel,private_channel", "public_channel"):
+            res = await http.get(
+                f"{SLACK_API}/conversations.list",
+                headers=_headers(),
+                params={"types": types, "exclude_archived": "true", "limit": max(1, min(limit, 200))},
+            )
+            data = res.json()
+            if data.get("ok") or data.get("error") != "missing_scope":
+                break
     if not data.get("ok"):
         return f"Error listing channels: {data.get('error')}"
     lines = [f"- #{c['name']} id={c['id']}" for c in data.get("channels", [])]
