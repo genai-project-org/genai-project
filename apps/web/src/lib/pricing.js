@@ -9,7 +9,16 @@ let inflight = null;
 export function loadPricing(force = false) {
   if (cache && !force) return Promise.resolve(cache);
   if (!inflight || force) {
-    inflight = api.get('/pricing').then((r) => { cache = r.data; return cache; })
+    inflight = api.get('/pricing').then((r) => {
+      // Never let a malformed/partial response reach the pages: they read nested fields
+      // (payg.presets, packs) and would crash the whole screen. Treat it like a failed fetch.
+      const d = r.data;
+      if (!d || !Array.isArray(d.packs) || !d.payg || !Array.isArray(d.payg.presets)) {
+        throw new Error('Unexpected pricing response');
+      }
+      cache = d;
+      return cache;
+    })
       .finally(() => { inflight = null; });
   }
   return inflight;
