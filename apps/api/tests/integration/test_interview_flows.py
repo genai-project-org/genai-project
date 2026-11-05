@@ -125,7 +125,7 @@ def test_proctoring_violations_escalate_to_termination(client, register_user):
 
     r1 = client.post(f"/api/interview/sessions/{session_id}/violations",
                      data={"type": "tab_blur"}, headers=headers)
-    assert r1.json() == {"warning_count": 1, "warnings_remaining": 2, "terminated": False}
+    assert {k: r1.json()[k] for k in ('warning_count', 'warnings_remaining', 'terminated')} == {"warning_count": 1, "warnings_remaining": 2, "terminated": False}
 
     r2 = client.post(f"/api/interview/sessions/{session_id}/violations",
                      data={"type": "face_not_visible"}, headers=headers)

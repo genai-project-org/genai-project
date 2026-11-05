@@ -65,18 +65,14 @@ describe('services/iap', () => {
     jest.dontMock('expo-iap');
   });
 
+  // Product ids come from the backend (GET /api/pricing), not from the client
   // ---------------------------------------------------------------------
-  // PRODUCT_TO_PLAN mapping
-  // ---------------------------------------------------------------------
-  describe('PRODUCT_TO_PLAN', () => {
-    it('maps every known store product id to the expected backend plan', () => {
+  describe('product catalogue', () => {
+    it('has no hardcoded plan/product mapping: ids are served by the backend', () => {
       setup();
-      expect(iap.PRODUCT_TO_PLAN).toEqual({
-        'iema.pro.monthly': 'pro',
-        'iema.pro.annual': 'pro_annual',
-        'iema.team.monthly': 'team',
-        'iema.team.annual': 'team_annual',
-      });
+      expect(iap.PRODUCT_TO_PLAN).toBeUndefined();
+      expect(typeof iap.loadProducts).toBe('function');
+      expect(typeof iap.purchaseProduct).toBe('function');
     });
   });
 
@@ -94,9 +90,9 @@ describe('services/iap', () => {
       expect(iap.isIapAvailable()).toBe(true);
     });
 
-    it('purchaseSubscription() rejects with a helpful message in Expo Go', async () => {
+    it('purchaseProduct() rejects with a helpful message in Expo Go', async () => {
       setup({ isExpoGo: true });
-      await expect(iap.purchaseSubscription('iema.pro.monthly')).rejects.toThrow(
+      await expect(iap.purchaseProduct('iema.pack.surge')).rejects.toThrow(
         /Expo Go/
       );
     });
@@ -108,86 +104,45 @@ describe('services/iap', () => {
     });
   });
 
+  // purchaseProduct(): iOS vs Android request shaping (consumable credit packs)
   // ---------------------------------------------------------------------
-  // purchaseSubscription(): iOS vs Android request shaping
-  // ---------------------------------------------------------------------
-  describe('purchaseSubscription() request shape', () => {
-    it('iOS: sends only { ios: { sku } }, no offer/token logic', async () => {
+  describe('purchaseProduct() request shape', () => {
+    it('iOS: sends { ios: { sku, quantity: 1 } } as an in-app product', async () => {
       setup({ isExpoGo: false, platformOS: 'ios' });
 
-      await iap.purchaseSubscription('iema.pro.monthly');
+      await iap.purchaseProduct('iema.pack.surge');
 
       expect(expoIapMock.requestPurchase).toHaveBeenCalledWith({
-        request: { ios: { sku: 'iema.pro.monthly' } },
-        type: 'subs',
-        willAutoRenew: true,
+        request: { ios: { sku: 'iema.pack.surge', quantity: 1 } },
+        type: 'in-app',
       });
     });
 
-    it('Android: sends { skus } with no subscriptionOffers when no offerToken is known', async () => {
+    it('Android: sends { android: { skus } } as an in-app product, no subscription offers', async () => {
       setup({ isExpoGo: false, platformOS: 'android' });
-      expoIapMock.fetchProducts.mockResolvedValue([
-        { id: 'iema.pro.monthly', productId: 'iema.pro.monthly' },
-      ]);
-      await iap.loadSubscriptions();
 
-      await iap.purchaseSubscription('iema.pro.monthly');
+      await iap.purchaseProduct('iema.pack.surge');
 
       expect(expoIapMock.requestPurchase).toHaveBeenCalledWith({
-        request: { android: { skus: ['iema.pro.monthly'] } },
-        type: 'subs',
-        willAutoRenew: true,
+        request: { android: { skus: ['iema.pack.surge'] } },
+        type: 'in-app',
       });
     });
 
-    it('Android: extracts and includes the base-plan offerToken when present', async () => {
+    it('loadProducts() fetches the given skus as in-app products', async () => {
       setup({ isExpoGo: false, platformOS: 'android' });
-      expoIapMock.fetchProducts.mockResolvedValue([
-        {
-          id: 'iema.pro.monthly',
-          productId: 'iema.pro.monthly',
-          subscriptionOfferDetailsAndroid: [{ offerToken: 'OFFER_TOKEN_ABC' }],
-        },
-      ]);
-      await iap.loadSubscriptions();
+      expoIapMock.fetchProducts.mockResolvedValue([{ id: 'iema.pack.surge' }]);
 
-      await iap.purchaseSubscription('iema.pro.monthly');
+      const products = await iap.loadProducts(['iema.pack.surge']);
 
-      expect(expoIapMock.requestPurchase).toHaveBeenCalledWith({
-        request: {
-          android: {
-            skus: ['iema.pro.monthly'],
-            subscriptionOffers: [{ offerToken: 'OFFER_TOKEN_ABC' }],
-          },
-        },
-        type: 'subs',
-        willAutoRenew: true,
-      });
+      expect(expoIapMock.fetchProducts).toHaveBeenCalledWith({ skus: ['iema.pack.surge'], type: 'in-app' });
+      expect(products).toEqual([{ id: 'iema.pack.surge' }]);
     });
 
-    it('Android: matches the product by productId as well as id', async () => {
-      setup({ isExpoGo: false, platformOS: 'android' });
-      expoIapMock.fetchProducts.mockResolvedValue([
-        {
-          // no `id` field, only `productId` — code falls back to it
-          productId: 'iema.team.annual',
-          subscriptionOfferDetailsAndroid: [{ offerToken: 'TEAM_OFFER' }],
-        },
-      ]);
-      await iap.loadSubscriptions();
-
-      await iap.purchaseSubscription('iema.team.annual');
-
-      expect(expoIapMock.requestPurchase).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: {
-            android: {
-              skus: ['iema.team.annual'],
-              subscriptionOffers: [{ offerToken: 'TEAM_OFFER' }],
-            },
-          },
-        })
-      );
+    it('loadProducts() returns [] without calling the store when there are no skus', async () => {
+      setup({ isExpoGo: false, platformOS: 'ios' });
+      expect(await iap.loadProducts([])).toEqual([]);
+      expect(expoIapMock.fetchProducts).not.toHaveBeenCalled();
     });
   });
 
@@ -209,7 +164,7 @@ describe('services/iap', () => {
       const onError = jest.fn();
       const handlePurchase = await initAndCapturePurchaseHandler({ onPurchase, onError });
 
-      const purchase = { productId: 'iema.pro.monthly', purchaseToken: 'jws-token-not-used' };
+      const purchase = { productId: 'iema.pack.surge', purchaseToken: 'jws-token-not-used' };
       await handlePurchase(purchase);
 
       expect(expoIapMock.getReceiptDataIOS).toHaveBeenCalled();
@@ -218,7 +173,7 @@ describe('services/iap', () => {
       });
       expect(expoIapMock.finishTransaction).toHaveBeenCalledWith({
         purchase,
-        isConsumable: false,
+        isConsumable: true,
       });
       expect(onPurchase).toHaveBeenCalledWith({ ok: true, credits: 500 }, purchase);
       expect(onError).not.toHaveBeenCalled();
@@ -231,7 +186,7 @@ describe('services/iap', () => {
       const onError = jest.fn();
       const handlePurchase = await initAndCapturePurchaseHandler({ onPurchase, onError });
 
-      await handlePurchase({ productId: 'iema.pro.monthly', purchaseToken: 'x' });
+      await handlePurchase({ productId: 'iema.pack.surge', purchaseToken: 'x' });
 
       expect(apiMock.post).not.toHaveBeenCalled();
       expect(onPurchase).not.toHaveBeenCalled();
@@ -246,14 +201,14 @@ describe('services/iap', () => {
       const onError = jest.fn();
       const handlePurchase = await initAndCapturePurchaseHandler({ onPurchase, onError });
 
-      const purchase = { productId: 'iema.team.monthly', purchaseToken: 'android-token-xyz' };
+      const purchase = { productId: 'iema.pack.turbo', purchaseToken: 'android-token-xyz' };
       await handlePurchase(purchase);
 
       expect(expoIapMock.getReceiptDataIOS).not.toHaveBeenCalled();
       expect(apiMock.post).toHaveBeenCalledWith('/payments/iap/google/verify', {
-        product_id: 'iema.team.monthly',
+        product_id: 'iema.pack.turbo',
         purchase_token: 'android-token-xyz',
-        is_subscription: true,
+        is_subscription: false,
       });
       expect(onPurchase).toHaveBeenCalledWith({ ok: true, credits: 250 }, purchase);
       expect(onError).not.toHaveBeenCalled();
@@ -266,7 +221,7 @@ describe('services/iap', () => {
       const onError = jest.fn();
       const handlePurchase = await initAndCapturePurchaseHandler({ onPurchase, onError });
 
-      await handlePurchase({ productId: 'iema.team.monthly', purchaseToken: 'reused-token' });
+      await handlePurchase({ productId: 'iema.pack.turbo', purchaseToken: 'reused-token' });
 
       expect(onPurchase).not.toHaveBeenCalled();
       expect(expoIapMock.finishTransaction).not.toHaveBeenCalled();

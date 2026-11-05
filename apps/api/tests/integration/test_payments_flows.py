@@ -149,8 +149,8 @@ def test_razorpay_order_creates_a_payment_link(client, auth_user, monkeypatch):
     assert body["payment_link_id"] == "plink_fake001"
     assert body["credits"] == 5750
     assert created["currency"] == "INR"
-    # 39 USD * 85.0 (mocked FX) = 3315, rounded up to nearest 100 -> 3400, in paise.
-    assert created["amount"] == 340000
+    # 39 USD * 85.0 (mocked FX) = 3315, rounded UP to the pricing engine's INR step (50) -> 3350, in paise.
+    assert created["amount"] == 335000
 
 
 def test_razorpay_order_404s_for_unknown_pack(client, auth_user):

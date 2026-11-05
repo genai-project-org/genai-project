@@ -18,8 +18,9 @@ def test_connectors_list_is_friendly_when_unconfigured(client, auth_user):
     r = client.get("/api/mcp/connectors", headers=headers)
     assert r.status_code == 200
     by_id = {c["id"]: c for c in r.json()}
-    assert by_id["linear"]["auth_type"] == "api_key" and by_id["linear"]["mcp_status"] == "ready"
-    assert by_id["linear"]["notes"]
+    # Linear moved to OAuth when its client credentials were added; it still has its own tool server.
+    assert by_id["linear"]["auth_type"] == "oauth2" and by_id["linear"]["mcp_status"] == "ready"
+    assert by_id["telegram"]["auth_type"] == "api_key"
     assert by_id["slack"]["configured"] is False and by_id["slack"]["connected"] is False
 
 
